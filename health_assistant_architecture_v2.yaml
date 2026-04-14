@@ -1,0 +1,1298 @@
+# ============================================================================
+# Health Assistant — Pipeline Architecture Specification v2
+# ============================================================================
+# Локальный ассистент для анализа здоровья, физических нагрузок и тренировок.
+# LLM: Ollama (multi-model setup)
+# Сервер: локальный, без доступа в интернет
+# ============================================================================
+#
+# CHANGELOG v2:
+#   - Добавлен Data Ingestion Layer (модуль подготовки данных из API)
+#   - Добавлена RAG-система с фитнес-базой знаний
+#   - Трёхуровневая модельная схема (7b / 14b / 32b+)
+#   - Fast path для простых запросов
+#   - Обновлены data models под реальную структуру API
+#   - Добавлены модули: Recovery Score, Strain Score, периодизация
+#   - Заглушки: proactive alerts, advanced safety, semantic memory TTL
+#   - Аномалии: явный мусор фильтруется в data ingestion,
+#     статистические выбросы — флагируются и передаются ассистенту
+#
+# ============================================================================
+
+system:
+  name: Health Training Assistant
+  runtime: local_server
+  llm_backend: ollama
+  internet_access: false  # КРИТИЧНО: вся система работает оффлайн
+
+  llm_models:
+    lightweight:
+      name: qwen2.5:7b
+      role: intent_detection, safety_check, entity_extraction
+      description: >
+        Лёгкая модель для быстрой классификации намерений,
+        проверки безопасности и извлечения сущностей.
+        Меньше латентность, экономия ресурсов.
+
+    primary:
+      name: qwen2.5:14b
+      role: response_generator, simple_planning
+      description: >
+        Основная модель для генерации ответов, объяснения
+        результатов анализа, простого планирования (tool_simple,
+        template_plan). Не используется для сложного multi-step
+        планирования.
+
+    heavy:
+      name: qwen2.5:32b  # или другая тяжёлая модель, подбирается экспериментально
+      role: complex_planner, plan_generator
+      description: >
+        Тяжёлая модель для сложных задач: multi-step анализ,
+        построение планов тренировок, сопоставление данных
+        из разных источников. Вызывается только для route=planner
+        и route=template_plan (генерация планов).
+        Важно: подбор конкретной модели требует экспериментов
+        на реальных задачах.
+
+  vector_db:
+    engine: chromadb
+    embedding_model: nomic-embed-text  # локальная модель эмбеддингов
+    collections:
+      - name: knowledge_base
+        description: >
+          Фитнес-база знаний (RAG). Чанки из проверенных
+          источников: нормы, формулы, принципы тренировок.
+          Используется при генерации рекомендаций и планов.
+        # Подробнее — см. секцию knowledge_base
+
+      - name: semantic_memory
+        description: >
+          Эмбеддинги прошлых взаимодействий.
+          ЗАГЛУШКА v1: базовое сохранение без TTL и категоризации.
+          TODO v2: TTL-стратегия, разделение по типам
+          (facts / recommendations / chat), устаревание.
+
+  database:
+    engine: sqlite  # или PostgreSQL для продакшена
+    description: >
+      Основная БД для хранения нормализованных данных пользователя,
+      профиля, истории тренировок и метрик.
+
+# ============================================================================
+# KNOWLEDGE BASE (RAG)
+# ============================================================================
+
+knowledge_base:
+  description: >
+    Локальная база знаний для RAG. Критически важна, т.к.
+    LLM работает оффлайн и не может обратиться к интернету.
+    Без RAG модель будет давать общие советы из training data,
+    часто неточные или устаревшие.
+
+  embedding_model: nomic-embed-text
+  chunk_size: 512  # токенов
+  chunk_overlap: 64
+  retrieval_top_k: 5
+
+  categories:
+    - id: physiology_norms
+      description: "Нормы и референсные значения"
+      topics:
+        - "HRV нормы по возрасту и полу"
+        - "Пульс покоя — нормы, что влияет"
+        - "Пульсовые зоны — формулы Karvonen, %HRmax"
+        - "SpO2 — нормы, когда тревожно"
+        - "Температура кожи — нормы, суточные колебания"
+        - "Нормы сна по возрасту"
+
+    - id: training_principles
+      description: "Принципы тренировок"
+      topics:
+        - "Принципы прогрессии нагрузки"
+        - "Периодизация: линейная, волновая, блочная"
+        - "Тренировочный объём и интенсивность"
+        - "TRIMP, Training Monotony, Training Strain — формулы"
+        - "Суперкомпенсация и recovery"
+        - "Принципы построения макро/мезо/микроциклов"
+
+    - id: recovery_science
+      description: "Восстановление и перетренированность"
+      topics:
+        - "Маркеры перетренированности (HRV, RHR, сон, настроение)"
+        - "Overreaching vs overtraining — различия"
+        - "Влияние сна на восстановление"
+        - "Recovery Score — как считать, какие факторы"
+        - "Deload-недели — когда, как долго"
+
+    - id: sport_specific
+      description: "Специфика видов спорта"
+      topics:
+        - "Бег: темп, каденс, пульсовые зоны, построение тренировки"
+        - "Велоспорт: мощность, каденс, зоны интенсивности"
+        - "Плавание: темп, техника, структура тренировки"
+        - "Силовые: RPE, 1RM, объём, прогрессия"
+
+    - id: nutrition_basics
+      description: "Основы питания для тренировок"
+      topics:
+        - "Калорийный баланс: дефицит, профицит, поддержка"
+        - "Питание до/после тренировки"
+        - "Гидратация"
+
+  chunk_metadata:
+    - category: "id категории"
+    - source: "название источника"
+    - confidence: "high | medium"  # high = научно подтверждено, medium = экспертное мнение
+    - experience_level: "all | beginner | intermediate | advanced"
+    - sport_type: "all | running | cycling | swimming | strength"
+
+  retrieval_strategy:
+    description: >
+      При генерации ответа, если intent = plan_request,
+      data_analysis, health_concern — обязательно вызвать RAG.
+      Для direct_question и general_chat — не вызывать.
+    method: >
+      1. Embedding запроса пользователя
+      2. Similarity search в knowledge_base
+      3. Фильтрация по metadata (sport_type, experience_level)
+      4. Top-k чанков добавляются в prompt как context
+
+# ============================================================================
+# DATA INGESTION LAYER
+# ============================================================================
+
+data_ingestion:
+  description: >
+    Модуль подготовки данных. Забирает сырые данные из API,
+    нормализует, дедуплицирует и загружает в локальную БД.
+    Работает отдельно от пайплайна чата — либо по расписанию,
+    либо по запросу.
+
+  api_endpoints:
+    auth:
+      method: POST
+      url: "{API}/auth/login"
+      body: '{"email": "...", "password": "..."}'
+      returns: accessToken
+
+    health_days:
+      method: GET
+      url: "{API}/admin/health-days?userId={userId}&skip=0&take=100"
+      description: >
+        Записи по дням. Одна дата может иметь записи от нескольких
+        платформ (apple_health, garmin, whoop). Каждая запись —
+        мета-контейнер (нет данных о метриках, только привязка
+        даты к платформе).
+      known_platforms: [apple_health, garmin, whoop]
+      conflict_resolution: >
+        Поле version указывает количество обновлений.
+        При конфликте: приоритет по платформе для каждой метрики
+        задаётся в daily-facts.sourcesJson.
+
+    daily_facts:
+      method: GET
+      url: "{API}/admin/daily-facts?userId={userId}&skip=0&take=100"
+      description: >
+        Агрегированные дневные метрики. Одна запись на дату.
+        Содержит колонки данных + sourcesJson с маппингом
+        метрика → источник.
+
+      current_columns:
+        - steps: "int, always present"
+        - caloriesKcal: "int?, 47% nulls"
+        - recoveryScore: "int?, 73% nulls (только Whoop)"
+        - sleepPerformancePercentage: "always null (100% nulls)"
+
+      columns_to_add:
+        description: >
+          Эти метрики уже приходят из API (указаны в sourcesJson),
+          но не сохраняются в колонки. Запрос к API-команде:
+          добавить их как колонки в daily-facts.
+        metrics:
+          - hrvRmssdMilli: "float — HRV в миллисекундах (RMSSD). Источник: whoop_recovery_api. КРИТИЧНО для Recovery Score."
+          - restingHeartRate: "int — пульс покоя в BPM. Источник: whoop_recovery_api. КРИТИЧНО для анализа нагрузки."
+          - spo2Percentage: "float — насыщение крови кислородом. Источник: whoop_recovery_api."
+          - skinTempCelsius: "float — температура кожи. Источник: whoop_recovery_api."
+          - sleepTotalInBedTimeMilli: "int — время в кровати в мс. Источник: whoop_sleep_api / apple_health / garmin."
+          - waterLiters: "float — потребление воды. Источник: apple_health / garmin."
+
+    activities:
+      method: GET
+      url: "{API}/admin/activities?userId={userId}&skip=0&take=100"
+      description: >
+        Список тренировок/активностей. Могут приходить из разных
+        источников (WHOOP, Apple Health, ручной ввод).
+
+      fields:
+        - title: "string — название, включает префикс источника ('WHOOP •', 'Apple Health Workout')"
+        - sportType: "string — тип: running, cycling, swimming, gym, activity, walking, field_hockey, other"
+        - distance: "float — дистанция в метрах (54% нулей)"
+        - duration: "int — длительность в секундах"
+        - startTime: "ISO datetime"
+        - endTime: "ISO datetime"
+        - avgSpeed: "float — средняя скорость (54% нулей)"
+        - maxSpeed: "float — макс скорость (54% нулей)"
+        - elevation: "float — набор высоты (93% нулей)"
+        - calories: "int — калории (всегда заполнено, но точность варьируется)"
+
+      missing_fields:
+        description: >
+          Поля, которых нет в текущем API, но которые нужны
+          для полноценной аналитики. Запрос к API-команде.
+        priority_high:
+          - avgHeartRate: "int — средний пульс во время тренировки"
+          - maxHeartRate: "int — макс пульс во время тренировки"
+        priority_medium:
+          - heartRateZones: "list — время в каждой пульсовой зоне"
+          - cadence: "float — каденс (бег, вело)"
+          - perceivedEffort: "int 1-10 — RPE, может вводиться вручную"
+        priority_low:
+          - route: "polyline — маршрут"
+          - laps: "list — разбивка по отрезкам"
+
+  processing:
+    garbage_filter:
+      description: >
+        Фильтрация явного мусора. Применяется ДО дедупликации.
+        Отфильтрованные записи сохраняются в отдельную таблицу
+        для аудита, но не попадают в основную БД.
+      rules:
+        - id: debug_entries
+          condition: "title содержит 'Debug' или 'Fake' или 'Test'"
+          action: remove
+          reason: "Тестовые записи в продакшн-данных"
+
+        - id: micro_activities
+          condition: "duration < 60 секунд"
+          action: remove
+          reason: "Случайные записи (нажал/остановил), нет аналитической ценности"
+
+    anomaly_flagging:
+      description: >
+        Статистические выбросы НЕ удаляются, а помечаются флагом.
+        Ассистент получает флаг и может учесть контекст
+        (интервалы, соревнование и т.д.).
+      rules:
+        - id: calorie_outlier
+          condition: "calories > mean + 3*std для данного sportType и сопоставимого duration"
+          flag: "anomaly:calorie_outlier"
+          example: "Бег 60мин 2100kcal при среднем 400kcal"
+
+        - id: calorie_suspiciously_low
+          condition: "calories < 10 AND duration > 300"
+          flag: "anomaly:calorie_suspiciously_low"
+          example: "WHOOP cycling 40мин 1kcal"
+
+        - id: speed_impossible
+          condition: "avgSpeed > физический предел для sportType"
+          flag: "anomaly:speed_impossible"
+
+    deduplication:
+      description: >
+        Одна тренировка может быть записана несколькими источниками.
+        Дедупликация выбирает «лучшую» запись.
+      strategy:
+        match_criteria:
+          - "startTime совпадает ± 2 минуты"
+          - "sportType совпадает ИЛИ один из них == 'activity'"
+        merge_rule: >
+          Из группы дубликатов выбирается запись с максимальным
+          количеством ненулевых полей. При равенстве — приоритет:
+          1) Ручной ввод (без префикса) — пользователь знает лучше
+          2) Apple Health — больше метрик
+          3) WHOOP — обычно только duration + calories
+        preserve_all: >
+          Все варианты сохраняются с пометкой is_duplicate=true,
+          выбранный — is_primary=true. Это позволяет откатить
+          решение или использовать данные из нескольких источников.
+
+    daily_facts_enrichment:
+      description: >
+        После добавления колонок API-командой: парсинг sourcesJson,
+        заполнение колонок из правильного источника.
+      source_priority:
+        hrvRmssdMilli: whoop_recovery_api
+        restingHeartRate: whoop_recovery_api
+        spo2Percentage: whoop_recovery_api
+        skinTempCelsius: whoop_recovery_api
+        sleepTotalInBedTimeMilli: [whoop_sleep_api, apple_health, garmin]
+        steps: [apple_health, garmin]
+        caloriesKcal: activities  # агрегация из дедуплицированных активностей
+        waterLiters: [apple_health, garmin]
+
+    sync_schedule:
+      description: >
+        Как часто забирать данные из API.
+      options:
+        - manual: "По запросу пользователя"
+        - periodic: "Каждые N минут (настраиваемо)"
+      note: >
+        Для MVP — manual. Для продакшена — periodic
+        с incremental sync (только новые/обновлённые записи).
+
+# ============================================================================
+# PIPELINE
+# ============================================================================
+
+pipeline:
+
+  # --------------------------------------------------------------------------
+  # 1. USER QUERY
+  # --------------------------------------------------------------------------
+  - id: user_query
+    name: User Query
+    type: entry_point
+    outputs: [raw_query, timestamp, session_id]
+    description: >
+      Точка входа. Пользователь отправляет текстовый запрос через чат.
+    details:
+      - Фиксируется timestamp запроса
+      - Привязка к текущей сессии (session_id)
+      - Привязка к пользователю (user_id)
+      - Сырой текст без обработки передаётся дальше
+    next: context_builder
+
+  # --------------------------------------------------------------------------
+  # 2. CONTEXT BUILDER + MEMORY RETRIEVAL
+  # --------------------------------------------------------------------------
+  - id: context_builder
+    name: Context Builder
+    type: processor
+    inputs: [raw_query, session_id, user_id]
+    outputs: [enriched_query]
+    dependencies: [memory_store, knowledge_base]
+    description: >
+      Нормализует текст запроса, подтягивает релевантный контекст
+      из всех слоёв памяти и фитнес-базы знаний,
+      формирует обогащённый запрос.
+    details:
+      text_normalization:
+        - Исправление опечаток и транслитерации
+        - Нормализация единиц измерения (кг, фунты → единый формат)
+        - Разрешение сокращений (ЧСС → частота сердечных сокращений)
+        - Приведение дат к единому формату
+
+      memory_retrieval:
+        short_term:
+          source: session_context
+          description: >
+            История текущего разговора. Последние N сообщений
+            для поддержания контекста диалога.
+          max_messages: 10
+
+        long_term:
+          source: user_profile_db
+          description: >
+            Факты о пользователе: возраст, вес, рост, травмы,
+            хронические заболевания, цели тренировок, предпочтения.
+          fields:
+            - user_id
+            - age
+            - weight_kg
+            - height_cm
+            - gender
+            - injuries
+            - chronic_conditions
+            - training_goals
+            - experience_level
+            - max_heart_rate
+            - resting_heart_rate
+            - preferred_sports
+
+        semantic:
+          source: vector_db.semantic_memory
+          description: >
+            Поиск по эмбеддингам прошлых взаимодействий.
+            ЗАГЛУШКА v1: базовая реализация.
+          method: cosine_similarity
+          top_k: 5
+          # TODO v2: TTL, категоризация, устаревание
+
+        knowledge:
+          source: vector_db.knowledge_base
+          description: >
+            RAG — поиск релевантных чанков из фитнес-базы знаний.
+            Вызывается для intents: plan_request, data_analysis,
+            health_concern. Не вызывается для direct_question,
+            general_chat.
+          method: cosine_similarity
+          top_k: 5
+          filter_by: [sport_type, experience_level]
+
+      output_format:
+        enriched_query:
+          raw_text: "исходный запрос"
+          normalized_text: "нормализованный запрос"
+          user_profile: { }
+          conversation_history: [ ]
+          semantic_context: [ ]
+          knowledge_context: [ ]  # чанки из RAG
+          metadata:
+            timestamp: "ISO 8601"
+            session_id: "uuid"
+            user_id: "uuid"
+    next: intent_detection
+
+  # --------------------------------------------------------------------------
+  # 3. INTENT DETECTION
+  # --------------------------------------------------------------------------
+  - id: intent_detection
+    name: Intent Detection
+    type: classifier
+    inputs: [enriched_query]
+    outputs: [intent, confidence, entities]
+    llm: lightweight
+    description: >
+      Определяет намерение пользователя. Сначала применяются правила
+      (быстро, детерминировано), затем при низком confidence — LLM.
+    details:
+      stage_1_rules:
+        description: >
+          Набор regex/keyword правил для типовых запросов.
+          Если правило срабатывает с высоким confidence (≥ 0.85),
+          LLM не вызывается.
+        examples:
+          - pattern: "(покажи|дай|выведи).*(тренировк|занят)"
+            intent: data_retrieval
+            confidence: 0.9
+          - pattern: "(составь|создай|сделай).*(план|программ)"
+            intent: plan_request
+            confidence: 0.9
+          - pattern: "(болит|боль|дискомфорт|немеет)"
+            intent: health_concern
+            confidence: 0.95
+          - pattern: "(сколько|какой|когда).*(пульс|вес|калор)"
+            intent: direct_question
+            confidence: 0.85
+
+      stage_2_llm:
+        description: >
+          Если rules дали confidence < 0.85, запрос уходит в LLM
+          для классификации.
+        prompt_includes:
+          - normalized_text
+          - conversation_history (последние 3 сообщения)
+          - список intents с примерами
+
+      intents:
+        - id: direct_question
+          description: "Простой вопрос, ответ на который не требует вычислений"
+          examples:
+            - "Какой у меня максимальный пульс?"
+            - "Сколько я вешу?"
+            - "Когда была последняя тренировка?"
+
+        - id: data_retrieval
+          description: "Запрос на получение и отображение данных"
+          examples:
+            - "Покажи мои тренировки за неделю"
+            - "Выведи график пульса за месяц"
+
+        - id: data_analysis
+          description: "Запрос, требующий вычислений и анализа"
+          examples:
+            - "Проанализируй мой прогресс в беге"
+            - "Как меняется мой пульс покоя?"
+            - "Нет ли у меня перетренированности?"
+
+        - id: plan_request
+          description: "Запрос на составление плана тренировок/питания"
+          rag_required: true
+          examples:
+            - "Составь план тренировок на неделю"
+            - "Что мне есть перед тренировкой?"
+
+        - id: health_concern
+          description: "Жалоба на здоровье, симптомы, боль"
+          rag_required: true
+          examples:
+            - "У меня болит колено после приседаний"
+            - "Головокружение во время кардио"
+
+        - id: general_chat
+          description: "Общий разговор, не связанный с данными"
+          examples:
+            - "Привет, как дела?"
+            - "Спасибо за помощь"
+
+      fallback:
+        condition: "confidence < 0.5 у rules И у LLM"
+        action: clarification_request
+        description: >
+          Система формирует конкретный уточняющий вопрос.
+        example: >
+          "Вы хотите увидеть данные о тренировках за эту неделю
+          или получить анализ вашего прогресса?"
+
+      entity_extraction:
+        description: >
+          Параллельно с классификацией извлекаются сущности.
+        entities:
+          - time_range: "за неделю, вчера, в марте"
+          - exercise: "бег, велосипед, плавание"
+          - metric: "пульс, вес, калории, шаги, HRV, recovery"
+          - body_part: "колено, спина, плечо"
+          - intensity: "тяжёлая, лёгкая, средняя"
+          - sport_type: "running, cycling, swimming, gym"
+    next: safety_check
+
+  # --------------------------------------------------------------------------
+  # 4. SAFETY CHECK (pre-routing)
+  # --------------------------------------------------------------------------
+  - id: safety_check
+    name: Safety Check
+    type: guard
+    inputs: [intent, confidence, enriched_query]
+    outputs: [is_safe, safety_level, redirect_message]
+    llm: lightweight  # или чисто rules-based
+    description: >
+      Проверяет, не содержит ли запрос признаков состояния,
+      требующего медицинской помощи.
+      ЗАГЛУШКА v1: базовый pattern matching.
+      TODO v2: контекстный анализ с LLM, учёт ложных срабатываний.
+    details:
+      trigger_rules:
+        high_priority:
+          description: "Немедленная рекомендация обратиться к врачу"
+          patterns:
+            - "боль в груди"
+            - "боль в сердце"
+            - "не могу дышать"
+            - "потеря сознания"
+            - "онемение конечностей"
+            - "сильное головокружение"
+            - "кровь в моче"
+          action: block_and_redirect
+          message: >
+            Описанные симптомы могут быть серьёзными.
+            Пожалуйста, обратитесь к врачу.
+
+        medium_priority:
+          description: "Ответ + предупреждение"
+          patterns:
+            - "болит колено уже неделю"
+            - "постоянная усталость"
+            - "не могу набрать вес"
+            - "головная боль после тренировки"
+          action: respond_with_warning
+          message_suffix: >
+            Если симптомы сохраняются, рекомендую
+            проконсультироваться с врачом.
+
+      general_rules:
+        - "Никогда не ставить диагнозы"
+        - "Никогда не рекомендовать лекарства"
+        - "Никогда не отменять назначения врача"
+        - "При любых сомнениях — рекомендовать специалиста"
+
+      # TODO v2:
+      #   - Контекстный анализ через LLM для снижения false positives
+      #     ("не мог дышать — было круто!" не должно блокировать)
+      #   - Возможность пользователю подтвердить/отклонить блокировку
+    next: router
+
+  # --------------------------------------------------------------------------
+  # 5. ROUTER
+  # --------------------------------------------------------------------------
+  - id: router
+    name: Router
+    type: router
+    inputs: [intent, confidence, entities, enriched_query, is_safe, safety_level]
+    outputs: [route, route_params]
+    description: >
+      Направляет запрос в нужную ветку обработки.
+      Включает fast path для простых запросов.
+    details:
+      routes:
+        # ---- FAST PATH (пропускает Data Processing и Output Validation) ----
+        - route: fast_direct_answer
+          condition: >
+            intent in [direct_question, general_chat]
+            AND safety_level != high_priority
+          description: >
+            Ответ генерируется LLM напрямую из контекста.
+            Не требует вызова инструментов или вычислений.
+            Данные берутся из enriched_query (профиль, память).
+            ПРОПУСКАЕТ: Data Processing, Output Validation.
+            Идёт напрямую: Router → Response Generator → Delivery.
+          llm: primary
+          fast_path: true
+
+        # ---- STANDARD PATHS ----
+        - route: tool_simple
+          condition: "intent == data_retrieval AND entities содержит все параметры"
+          description: >
+            Один вызов инструмента: запрос данных из БД,
+            форматирование и возврат.
+          llm: primary
+          examples:
+            - "Покажи вчерашнюю тренировку" → get_activities(date=yesterday)
+            - "Какой пульс покоя сегодня?" → get_daily_fact(date=today, metric=restingHeartRate)
+
+        - route: template_plan
+          condition: "intent == plan_request OR intent matches known template"
+          description: >
+            Фиксированная последовательность шагов. Используется
+            для задач с заранее известным пайплайном.
+          llm: heavy  # генерация планов требует тяжёлой модели
+          templates:
+            - id: weekly_training_plan
+              rag_required: true
+              steps:
+                - get_user_profile
+                - get_recent_activities(days=14)
+                - get_daily_facts(days=14)  # recovery, HRV, resting HR
+                - calculate_training_load
+                - calculate_recovery_score
+                - rag_retrieve(category=training_principles)
+                - generate_plan  # LLM генерирует план с учётом RAG
+
+            - id: recovery_report
+              steps:
+                - get_daily_facts(days=14)
+                - get_recent_activities(days=14)
+                - calculate_recovery_score
+                - calculate_strain_score
+                - detect_overtraining
+                - generate_report
+
+            - id: overtraining_check
+              steps:
+                - get_daily_facts(days=14)  # HRV, resting HR, sleep
+                - get_recent_activities(days=14)
+                - calculate_training_load
+                - detect_overtraining
+                - generate_assessment
+
+            - id: progress_report
+              steps:
+                - get_activities_by_sport(sport_type, days=30)
+                - calculate_trends
+                - generate_report
+
+        - route: planner
+          condition: "intent == data_analysis OR сложный multi-step запрос"
+          description: >
+            LLM сама строит план: какие инструменты вызвать,
+            в каком порядке, с какими параметрами.
+          llm: heavy  # только тяжёлая модель для планирования
+          constraints:
+            max_iterations: 5
+            max_tool_calls_per_iteration: 3
+            timeout_seconds: 60
+          examples:
+            - "Сравни мой прогресс в беге за 3 месяца"
+            - "Проанализируй связь между качеством сна и результатами тренировок"
+    next: "[depends on route]"
+
+  # --------------------------------------------------------------------------
+  # 6. TOOL EXECUTOR
+  # --------------------------------------------------------------------------
+  - id: tool_executor
+    name: Tool Executor
+    type: executor
+    inputs: [route, route_params, tool_calls]
+    outputs: [raw_results]
+    description: >
+      Выполняет вызовы инструментов. Данные берутся из локальной БД
+      (заполненной модулем data_ingestion).
+    details:
+      available_tools:
+        # --- Получение данных ---
+        - id: get_activities
+          description: "Получить тренировки за период"
+          params: [date_from, date_to, sport_type?, include_flagged?]
+          returns: "list[Activity]"
+          note: "Возвращает только is_primary=true. Флаги аномалий включены."
+
+        - id: get_activities_by_sport
+          description: "Получить тренировки конкретного вида спорта"
+          params: [sport_type, date_from?, date_to?, limit?]
+          returns: "list[Activity]"
+
+        - id: get_daily_facts
+          description: "Получить дневные метрики"
+          params: [date_from, date_to, metrics?]
+          returns: "list[DailyFact]"
+          available_metrics:
+            - steps
+            - caloriesKcal
+            - recoveryScore
+            - hrvRmssdMilli        # после доработки API
+            - restingHeartRate     # после доработки API
+            - spo2Percentage       # после доработки API
+            - skinTempCelsius      # после доработки API
+            - sleepTotalInBedMilli # после доработки API
+            - waterLiters          # после доработки API
+
+        - id: get_user_profile
+          description: "Получить профиль пользователя"
+          params: [user_id]
+          returns: "UserProfile"
+
+        - id: rag_retrieve
+          description: "Получить релевантные чанки из базы знаний"
+          params: [query, category?, sport_type?, experience_level?, top_k?]
+          returns: "list[KnowledgeChunk]"
+
+        # --- Запись данных ---
+        - id: log_activity
+          description: "Записать тренировку через чат"
+          params: [sport_type, duration, calories?, distance?, notes?]
+          returns: "ActivityID"
+          note: >
+            Парсинг из свободного текста: "пробежал 5км за 25 минут"
+            → sport_type=running, distance=5000, duration=1500
+
+        - id: update_profile
+          description: "Обновить профиль пользователя"
+          params: [user_id, field, value]
+          returns: "ok"
+
+      error_handling:
+        - "Если tool не найден → ошибка, логирование, fallback-ответ"
+        - "Если tool вернул пустые данные → передать факт пустоты дальше"
+        - "Если timeout → retry 1 раз, затем ошибка"
+        - "Все ошибки логируются с полным контекстом"
+
+      planner_loop:
+        description: >
+          Для route=planner: Tool Executor может быть вызван
+          несколько раз. После каждого вызова результаты
+          возвращаются в Planner (heavy LLM), который решает —
+          нужны ли ещё данные или можно переходить к обработке.
+    next: data_processing
+
+  # --------------------------------------------------------------------------
+  # 7. DATA PROCESSING
+  # --------------------------------------------------------------------------
+  - id: data_processing
+    name: Data Processing
+    type: processor
+    inputs: [raw_results, intent, entities]
+    outputs: [structured_result]
+    description: >
+      Чистая вычислительная логика. Никакого LLM.
+      Принимает сырые данные, выполняет расчёты,
+      возвращает структурированный результат.
+    details:
+      modules:
+        # ---- БАЗОВЫЕ МОДУЛИ (MVP) ----
+
+        - id: recovery_score
+          description: >
+            Составной скор готовности к тренировке (0-100).
+            Аналог Whoop Recovery. Если есть нативный recoveryScore
+            от Whoop — использовать его, иначе рассчитывать свой.
+          inputs: [hrv_data, resting_hr_data, sleep_data, training_load_yesterday]
+          calculation: >
+            Взвешенная комбинация:
+            - HRV vs персональный baseline (30 дней): 35%
+            - Пульс покоя vs baseline: 25%
+            - Качество/длительность сна: 25%
+            - Нагрузка за предыдущий день: 15%
+          outputs:
+            score: 72  # 0-100
+            level: "green | yellow | red"
+            breakdown:
+              hrv_component: 80
+              rhr_component: 65
+              sleep_component: 70
+              load_component: 75
+            recommendation: "Готов к интенсивной тренировке"
+          fallback: >
+            Если HRV и resting HR недоступны (до доработки API),
+            использовать recoveryScore от Whoop напрямую.
+            Если и его нет — не показывать модуль.
+
+        - id: strain_score
+          description: >
+            Накопленная нагрузка за день/неделю. Аналог Whoop Strain.
+            Комбинирует все типы активности.
+          inputs: [activities_today, daily_steps, calories_active]
+          calculation: >
+            Нормализованная сумма:
+            - Тренировочные калории (из activities)
+            - Бытовая активность (шаги)
+            - Длительность × интенсивность
+            Шкала 0-21 (как Whoop) или 0-100 (упрощённая).
+          outputs:
+            score: 14.2
+            level: "low | moderate | high | overreaching"
+            activities_contribution:
+              - "Бег 45мин: 8.3"
+              - "Ходьба 6000 шагов: 2.1"
+            weekly_total: 67.5
+            weekly_trend: "stable"
+
+        - id: heart_rate_zones
+          description: "Расчёт пульсовых зон"
+          method: "Karvonen formula или %HRmax"
+          inputs: [max_hr, resting_hr, heart_rate_data]
+          outputs:
+            zones:
+              - zone: 1
+                name: "Восстановление"
+                range_bpm: [104, 122]
+                time_in_zone_minutes: 15
+                percentage_of_workout: 25
+          note: >
+            Полноценно работает только после добавления HR
+            в activities. До этого — расчёт зон по формуле
+            (без фактических данных по времени в зоне).
+
+        - id: training_load
+          description: "Тренировочный объём и нагрузка"
+          inputs: [activities, daily_facts]
+          outputs:
+            daily_load: 450  # условные единицы
+            weekly_load: 2800
+            monotony: 1.4  # < 2.0 — безопасно
+            strain: 3920   # weekly_load × monotony
+            acute_chronic_ratio: 1.15  # < 1.3 — безопасно
+            recommendation: "Нагрузка в норме"
+          note: >
+            Без HR в activities используются упрощённые метрики:
+            duration × sport_type_coefficient + calories.
+            С HR — переход на TRIMP.
+
+        - id: overtraining_detection
+          description: "Выявление перетренированности"
+          inputs: [hrv_data, resting_hr_data, training_load, sleep_data]
+          outputs:
+            risk_level: "low | medium | high"
+            markers:
+              hrv_trend: "declining | stable | improving"
+              resting_hr_trend: "elevated | stable | normal"
+              sleep_quality_trend: "declining | stable | improving"
+              training_monotony: 1.8
+              training_strain: 3200
+              acute_chronic_ratio: 1.25
+            details: "HRV снизилась на 12% за 2 недели..."
+            recommendation: "Рекомендуется deload-неделя"
+
+        - id: trend_analyzer
+          description: "Универсальный анализатор трендов"
+          inputs: [time_series_data, metric_name]
+          outputs:
+            direction: "up | down | stable"
+            change_percent: 5.2
+            period_analyzed: "30 days"
+            anomalies: [ ]  # точки с флагом anomaly
+            baseline: 65  # среднее за базовый период
+
+        - id: activity_summary
+          description: "Суммарная статистика активностей"
+          inputs: [activities, period]
+          outputs:
+            total_activities: 12
+            total_duration_minutes: 480
+            total_calories: 3500
+            total_distance_km: 45
+            by_sport:
+              running: { count: 8, duration: 320, distance: 40 }
+              cycling: { count: 4, duration: 160, distance: 0 }
+            streak_days: 5  # дней подряд с тренировкой
+            rest_days: 2
+
+        - id: sleep_analysis
+          description: "Анализ сна"
+          inputs: [sleep_data]
+          outputs:
+            avg_duration_hours: 7.2
+            trend: "stable"
+            deficit_hours_this_week: 2.5
+          note: >
+            Зависит от sleepTotalInBedTimeMilli.
+            До доработки API — модуль неактивен.
+
+        # ---- ПЕРИОДИЗАЦИЯ (после MVP) ----
+
+        - id: periodization
+          description: >
+            ЗАГЛУШКА v1. Понимание макро/мезо/микроциклов.
+            Генерация планов с учётом фаз подготовки.
+          status: placeholder
+          # TODO v2:
+          #   - Определение текущей фазы (base, build, peak, recovery)
+          #   - Адаптивное планирование на основе recovery
+          #   - Учёт целевых соревнований
+
+        - id: calorie_analysis
+          description: "Анализ калорийности и баланса"
+          inputs: [calorie_data, activity_data, user_profile]
+          outputs:
+            avg_intake: null  # нет данных о питании в API
+            avg_expenditure: 2650
+            recommendation_type: "deficit | surplus | maintenance"
+          note: >
+            Данные о питании отсутствуют в API. Модуль может
+            работать только с калориями от активностей.
+
+      output_format:
+        structured_result:
+          intent: "data_analysis"
+          modules_used: ["recovery_score", "overtraining_detection"]
+          results: { }
+          raw_data_summary:
+            records_analyzed: 42
+            date_range: "2026-03-01..2026-03-16"
+            anomaly_flags: ["2026-02-24: calorie_outlier on 'Бег'"]
+          warnings: [ ]
+    next: memory_update
+
+  # --------------------------------------------------------------------------
+  # 8. MEMORY UPDATE
+  # --------------------------------------------------------------------------
+  - id: memory_update
+    name: Memory Update
+    type: processor
+    inputs: [enriched_query, structured_result, intent]
+    outputs: [ ]
+    dependencies: [memory_store]
+    description: >
+      Обновляет все слои памяти после обработки запроса.
+      Работает асинхронно — не блокирует генерацию ответа.
+    details:
+      short_term:
+        action: "Добавить текущий запрос и ответ в историю сессии"
+        max_history: 20
+        eviction: "FIFO"
+
+      long_term:
+        action: "Обновить профиль пользователя при наличии новых фактов"
+        triggers:
+          - "Пользователь сообщил новый вес → update_profile(weight)"
+          - "Обнаружена травма → add_injury(description, date)"
+          - "Изменилась цель → update_goal(new_goal)"
+        method: "Rule-based extraction из enriched_query"
+
+      semantic:
+        action: "Сохранить эмбеддинг взаимодействия в vector DB"
+        what_to_store:
+          - "Краткое содержание запроса + ответа"
+          - "Ключевые результаты анализа"
+          - "Рекомендации, которые были даны"
+        embedding_model: "nomic-embed-text"
+        # ЗАГЛУШКА v1: сохраняем всё без TTL
+        # TODO v2: TTL, категоризация, переоценка старых записей
+    next: response_generator
+
+  # --------------------------------------------------------------------------
+  # 9. RESPONSE GENERATOR
+  # --------------------------------------------------------------------------
+  - id: response_generator
+    name: Response Generator
+    type: generator
+    inputs: [structured_result, enriched_query, intent, knowledge_context]
+    outputs: [response_text]
+    llm: primary  # или heavy для plan_request
+    description: >
+      LLM генерирует человекочитаемый ответ. НЕ делает вычислений,
+      НЕ придумывает данные. При наличии knowledge_context (RAG) —
+      использует его для обоснования рекомендаций.
+    details:
+      model_selection:
+        - "intent in [plan_request] → heavy model"
+        - "всё остальное → primary model"
+
+      system_prompt_rules:
+        - >
+          Все числовые данные в контексте — факт.
+          Не генерируй числа, которых нет в structured_result.
+        - >
+          Если данных недостаточно для вывода — скажи об этом прямо.
+        - >
+          Используй понятный язык. Избегай медицинского жаргона
+          без пояснений.
+        - >
+          Структурируй ответ: главный вывод → детали → рекомендации.
+        - >
+          Если safety_check пометил запрос как medium_priority —
+          добавь предупреждение о консультации с врачом.
+        - >
+          Ссылайся на конкретные данные: "ваш пульс покоя
+          вырос с 58 до 64 за 2 недели".
+        - >
+          Если есть knowledge_context — опирайся на него
+          при рекомендациях, но не цитируй дословно.
+        - >
+          Если активность помечена anomaly-флагом — упомяни это:
+          "Обратите внимание: тренировка 24.02 показывает
+          необычно высокие калории (2100). Возможно, данные
+          неточны или это были интервалы?"
+
+      prompt_template: |
+        Ты — фитнес-ассистент. Отвечай на русском.
+
+        ## Профиль пользователя
+        {user_profile}
+
+        ## Контекст разговора
+        {conversation_history}
+
+        ## База знаний (используй для рекомендаций)
+        {knowledge_context}
+
+        ## Результаты анализа
+        {structured_result}
+
+        ## Запрос пользователя
+        {normalized_text}
+
+        Правила:
+        - Используй ТОЛЬКО данные из "Результаты анализа"
+        - Не придумывай числа
+        - Если данных нет — скажи об этом
+        - Будь конкретен: цифры, даты, проценты
+        - Рекомендации обосновывай из "База знаний"
+
+      response_format:
+        max_length_tokens: 500
+        structure:
+          - summary: "1-2 предложения — главный вывод"
+          - details: "Развёрнутое объяснение с данными"
+          - recommendations: "Конкретные действия (если уместно)"
+          - warning: "Предупреждение (если safety_check требует)"
+    next: output_validation
+
+  # --------------------------------------------------------------------------
+  # 10. OUTPUT VALIDATION
+  # --------------------------------------------------------------------------
+  - id: output_validation
+    name: Output Validation
+    type: guard
+    inputs: [response_text, structured_result]
+    outputs: [validated_response]
+    skip_on: [fast_direct_answer]  # fast path пропускает этот блок
+    description: >
+      Финальная проверка ответа перед отправкой.
+      Пропускается для fast_direct_answer (нет вычислений —
+      нечего проверять).
+    details:
+      checks:
+        - id: hallucination_check
+          description: >
+            Проверяет, что все числа в response_text
+            присутствуют в structured_result.
+          method: "regex extraction + сравнение"
+          on_fail: "Убрать несоответствующее число, пометить в логах"
+
+        - id: medical_advice_check
+          description: >
+            Проверяет, что ответ не содержит диагнозов,
+            назначений лекарств, отмены назначений врача.
+          method: "keyword + pattern matching"
+          patterns:
+            - "вам нужно принимать"
+            - "диагноз:"
+            - "у вас (заболевание)"
+            - "прекратите приём"
+          on_fail: "Переформулировать или заблокировать фрагмент"
+
+        - id: consistency_check
+          description: >
+            ЗАГЛУШКА v1: базовая проверка.
+            TODO v2: semantic similarity с прошлыми ответами.
+          on_fail: "Добавить пометку о изменении рекомендации"
+    next: response_delivery
+
+  # --------------------------------------------------------------------------
+  # 11. RESPONSE DELIVERY
+  # --------------------------------------------------------------------------
+  - id: response_delivery
+    name: Response Delivery
+    type: output
+    inputs: [validated_response]
+    outputs: [chat_message]
+    description: >
+      Отправляет финальный ответ пользователю в чат.
+    details:
+      - Форматирование (Markdown)
+      - Прикрепление визуализаций (если были запрошены)
+      - Логирование финального ответа
+
+# ============================================================================
+# PROACTIVE ALERTS (ЗАГЛУШКА)
+# ============================================================================
+
+proactive_alerts:
+  status: placeholder
+  description: >
+    Фоновый процесс, который мониторит данные и генерирует
+    уведомления без запроса пользователя.
+    НЕ входит в MVP. Подготовлено место в архитектуре.
+
+  # TODO v2:
+  planned_alerts:
+    - id: hrv_drop
+      trigger: "HRV упала > 15% за 3 дня подряд"
+      message: "Ваш HRV снижается 3 дня подряд. Возможно, стоит взять день отдыха."
+
+    - id: resting_hr_spike
+      trigger: "Пульс покоя вырос > 10% от baseline"
+      message: "Пульс покоя повышен. Это может говорить о недовосстановлении."
+
+    - id: inactivity
+      trigger: "Нет тренировок > 4 дней"
+      message: "Вы не тренировались 4 дня. Всё в порядке?"
+
+    - id: weekly_summary
+      trigger: "Каждое воскресенье 20:00"
+      message: "Еженедельный отчёт: ..."
+
+    - id: recovery_ready
+      trigger: "Recovery Score > 80 после дня отдыха"
+      message: "Отличное восстановление! Сегодня хороший день для интенсивной тренировки."
+
+# ============================================================================
+# LOGGING
+# ============================================================================
+
+logging:
+  description: >
+    Сквозное логирование всего пайплайна.
+  storage: sqlite
+  retention_days: 90
+  log_levels:
+    - DEBUG: "Полные входы/выходы каждого блока"
+    - INFO: "Ключевые решения (intent, route, modules_used)"
+    - WARN: "Fallback-и, низкий confidence, пустые данные, anomaly flags"
+    - ERROR: "Ошибки tools, timeouts, невалидные ответы"
+  per_request_log:
+    - request_id: "uuid"
+    - user_id: "uuid"
+    - timestamp: "ISO 8601"
+    - raw_query: "исходный текст"
+    - intent: "classified intent"
+    - intent_confidence: 0.87
+    - route: "planner"
+    - fast_path: false
+    - tools_called: ["get_daily_facts", "get_activities"]
+    - modules_used: ["recovery_score", "overtraining_detection"]
+    - rag_chunks_used: 3
+    - llm_model_used: "qwen2.5:14b"
+    - llm_calls: 2
+    - total_duration_ms: 1250
+    - response_length_tokens: 180
+    - safety_flags: [ ]
+    - anomaly_flags: [ ]
+    - errors: [ ]
+
+# ============================================================================
+# DATA MODELS
+# ============================================================================
+
+data_models:
+  # Модели соответствуют реальной структуре API + расширения
+
+  Activity:
+    description: "Нормализованная тренировка после дедупликации"
+    fields:
+      - id: uuid
+      - user_id: uuid
+      - title: string
+      - sport_type: "running | cycling | swimming | gym | walking | activity | other"
+      - distance_meters: float?
+      - duration_seconds: int
+      - start_time: datetime
+      - end_time: datetime
+      - avg_speed: float?
+      - max_speed: float?
+      - elevation_meters: float?
+      - calories: int
+      - avg_heart_rate: int?      # после доработки API
+      - max_heart_rate: int?      # после доработки API
+      - source: "whoop | apple_health | garmin | manual"
+      - is_primary: bool          # true = выбрана из группы дубликатов
+      - anomaly_flags: list[string]  # ["calorie_outlier", ...]
+      - raw_title: string         # оригинальный title из API
+
+  DailyFact:
+    description: "Дневные метрики (одна запись на дату)"
+    fields:
+      - id: uuid
+      - user_id: uuid
+      - iso_date: date
+      - steps: int
+      - calories_kcal: int?
+      - recovery_score: int?        # нативный от Whoop
+      - recovery_score_calculated: int?  # наш расчётный
+      - strain_score: float?        # наш расчётный
+      - hrv_rmssd_milli: float?     # после доработки API
+      - resting_heart_rate: int?    # после доработки API
+      - spo2_percentage: float?     # после доработки API
+      - skin_temp_celsius: float?   # после доработки API
+      - sleep_total_in_bed_milli: int?  # после доработки API
+      - water_liters: float?        # после доработки API
+      - sources_json: json          # маппинг метрика → источник
+      - anomaly_flags: list[string]
+
+  UserProfile:
+    fields:
+      - id: uuid
+      - user_id: uuid              # привязка к внешней системе
+      - name: string
+      - age: int
+      - weight_kg: float
+      - height_cm: float
+      - gender: "male | female | other"
+      - max_heart_rate: int
+      - resting_heart_rate: int
+      - training_goals: list[string]
+      - experience_level: "beginner | intermediate | advanced"
+      - injuries: list[Injury]
+      - chronic_conditions: list[string]
+      - preferred_sports: list[string]
+      - created_at: datetime
+      - updated_at: datetime
+
+  Injury:
+    fields:
+      - body_part: string
+      - description: string
+      - date_occurred: date
+      - status: "active | recovered"
+      - restrictions: list[string]
+
+  KnowledgeChunk:
+    description: "Чанк из фитнес-базы знаний"
+    fields:
+      - id: uuid
+      - text: string
+      - category: string
+      - source: string
+      - confidence: "high | medium"
+      - experience_level: "all | beginner | intermediate | advanced"
+      - sport_type: "all | running | cycling | swimming | strength"
+      - embedding: vector
+
+# ============================================================================
+# TESTING & EVALUATION (ЗАГЛУШКА)
+# ============================================================================
+
+testing:
+  status: placeholder
+  description: >
+    Стратегия тестирования. НЕ входит в MVP первой итерации.
+    Место зарезервировано для проработки отдельно.
+
+  # TODO:
+  planned:
+    - id: intent_eval
+      description: "Eval-датасет для intent detection (включая edge cases)"
+
+    - id: hallucination_test
+      description: "Тесты на галлюцинации response generator"
+
+    - id: safety_regression
+      description: "Regression-тесты для safety check"
+
+    - id: latency_benchmark
+      description: "Бенчмарки латентности на целевом железе"
+
+    - id: rag_quality
+      description: "Оценка качества retrieval из базы знаний"
+
+    - id: deduplication_accuracy
+      description: "Тесты точности дедупликации активностей"
