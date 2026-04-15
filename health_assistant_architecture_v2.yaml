@@ -5,19 +5,6 @@
 # LLM: Ollama (multi-model setup)
 # Сервер: локальный, без доступа в интернет
 # ============================================================================
-#
-# CHANGELOG v2:
-#   - Добавлен Data Ingestion Layer (модуль подготовки данных из API)
-#   - Добавлена RAG-система с фитнес-базой знаний
-#   - Трёхуровневая модельная схема (7b / 14b / 32b+)
-#   - Fast path для простых запросов
-#   - Обновлены data models под реальную структуру API
-#   - Добавлены модули: Recovery Score, Strain Score, периодизация
-#   - Заглушки: proactive alerts, advanced safety, semantic memory TTL
-#   - Аномалии: явный мусор фильтруется в data ingestion,
-#     статистические выбросы — флагируются и передаются ассистенту
-#
-# ============================================================================
 
 system:
   name: Health Training Assistant
@@ -56,7 +43,7 @@ system:
 
   vector_db:
     engine: chromadb
-    embedding_model: nomic-embed-text  # локальная модель эмбеддингов
+    embedding_model: nomic-embed-text-v2-moe  # локальная модель эмбеддингов
     collections:
       - name: knowledge_base
         description: >
@@ -89,7 +76,7 @@ knowledge_base:
     Без RAG модель будет давать общие советы из training data,
     часто неточные или устаревшие.
 
-  embedding_model: nomic-embed-text
+  embedding_model: nomic-embed-text-v2-moe
   chunk_size: 512  # токенов
   chunk_overlap: 64
   retrieval_top_k: 5
@@ -718,12 +705,12 @@ pipeline:
             - steps
             - caloriesKcal
             - recoveryScore
-            - hrvRmssdMilli        # после доработки API
-            - restingHeartRate     # после доработки API
-            - spo2Percentage       # после доработки API
-            - skinTempCelsius      # после доработки API
-            - sleepTotalInBedMilli # после доработки API
-            - waterLiters          # после доработки API
+            - hrvRmssdMilli
+            - restingHeartRate
+            - spo2Percentage
+            - skinTempCelsius
+            - sleepTotalInBedMilli
+            - waterLiters
 
         - id: get_user_profile
           description: "Получить профиль пользователя"
@@ -973,7 +960,7 @@ pipeline:
           - "Краткое содержание запроса + ответа"
           - "Ключевые результаты анализа"
           - "Рекомендации, которые были даны"
-        embedding_model: "nomic-embed-text"
+        embedding_model: "nomic-embed-text-v2-moe"
         # ЗАГЛУШКА v1: сохраняем всё без TTL
         # TODO v2: TTL, категоризация, переоценка старых записей
     next: response_generator
@@ -1201,8 +1188,8 @@ data_models:
       - max_speed: float?
       - elevation_meters: float?
       - calories: int
-      - avg_heart_rate: int?      # после доработки API
-      - max_heart_rate: int?      # после доработки API
+      - avg_heart_rate: int?
+      - max_heart_rate: int?
       - source: "whoop | apple_health | garmin | manual"
       - is_primary: bool          # true = выбрана из группы дубликатов
       - anomaly_flags: list[string]  # ["calorie_outlier", ...]
@@ -1219,12 +1206,12 @@ data_models:
       - recovery_score: int?        # нативный от Whoop
       - recovery_score_calculated: int?  # наш расчётный
       - strain_score: float?        # наш расчётный
-      - hrv_rmssd_milli: float?     # после доработки API
-      - resting_heart_rate: int?    # после доработки API
-      - spo2_percentage: float?     # после доработки API
-      - skin_temp_celsius: float?   # после доработки API
-      - sleep_total_in_bed_milli: int?  # после доработки API
-      - water_liters: float?        # после доработки API
+      - hrv_rmssd_milli: float?
+      - resting_heart_rate: int?
+      - spo2_percentage: float?
+      - skin_temp_celsius: float?
+      - sleep_total_in_bed_milli: int?
+      - water_liters: float?
       - sources_json: json          # маппинг метрика → источник
       - anomaly_flags: list[string]
 
