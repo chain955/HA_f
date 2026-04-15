@@ -1,0 +1,9 @@
+Для корректного отображения проекта в WebStorm -
+Создай виртуальное окружение в корне проекта и поставь зависимости локально:
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --no-cache-dir -r requirements.txt
+Settings -> Project -> Python Interpreter
+Add Interpreter -> Existing -> .venv/bin/python
+Выход из виртуального окружения в терминале - deactivate 
+
