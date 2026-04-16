@@ -20,6 +20,7 @@ from app.tools.db_tools import (
     log_activity,
     update_profile,
 )
+from app.tools.rag_retrieve import rag_retrieve
 from app.tools.time_utils import resolve_time_range
 
 logger = logging.getLogger(__name__)
@@ -61,6 +62,7 @@ class ToolExecutor:
         user_id: str,
         entities: dict,
         db: AsyncSession,
+        query_text: str | None = None,
     ) -> ToolExecutorResult:
         """Выполнить список tool-вызовов.
 
@@ -93,6 +95,8 @@ class ToolExecutor:
                 date_to=date_to,
                 sport_type=sport_type,
                 db=db,
+                query_text=query_text,
+                entities=entities,
             )
             executor_result.results[tool_name] = result
 
@@ -106,6 +110,8 @@ class ToolExecutor:
         date_to: date,
         sport_type: str | None,
         db: AsyncSession,
+        query_text: str | None = None,
+        entities: dict | None = None,
     ) -> ToolResult:
         """Вызвать конкретный tool по имени с нужными параметрами."""
         if tool_name == "get_activities":
@@ -145,6 +151,25 @@ class ToolExecutor:
 
         if tool_name == "get_user_profile":
             return await get_user_profile(db=db, user_id=user_id)
+
+        if tool_name == "rag_retrieve":
+            if not query_text:
+                logger.warning("ToolExecutor: rag_retrieve вызван без query_text")
+                return ToolResult(
+                    tool_name="rag_retrieve",
+                    success=False,
+                    data=None,
+                    error="query_text не передан",
+                )
+            ents = entities or {}
+            category = ents.get("rag_category")
+            top_k = int(ents.get("rag_top_k", 5))
+            return await rag_retrieve(
+                query=query_text,
+                category=category,
+                sport_type=sport_type,
+                top_k=top_k,
+            )
 
         # log_activity и update_profile вызываются через execute_action (запись)
         logger.warning("ToolExecutor: неизвестный tool '%s'", tool_name)

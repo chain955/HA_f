@@ -547,6 +547,55 @@ async def run_seed() -> dict[str, str]:
         return {"status": "error", "output": "", "error": str(exc)}
 
 
+# ---------------------------------------------------------------------------
+# Semantic Memory (Issue #25)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/memory", dependencies=[Depends(_require_admin)])
+async def list_semantic_memory(
+    user_id: str | None = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+) -> dict[str, Any]:
+    """Список записей semantic_memory.
+
+    Args:
+        user_id: Фильтр по пользователю (опционально).
+        limit: Максимум записей.
+    """
+    from app.services.semantic_memory import semantic_memory
+    from app.services.vector_store import vector_store
+
+    if not vector_store.available:
+        return {"available": False, "items": [], "total": 0}
+
+    records = semantic_memory.list_records(user_id=user_id, limit=limit)
+    return {
+        "available": True,
+        "total": len(records),
+        "items": [r.to_dict() for r in records],
+    }
+
+
+@router.delete("/memory", dependencies=[Depends(_require_admin)])
+async def clear_semantic_memory(
+    user_id: str | None = Query(None),
+) -> dict[str, Any]:
+    """Очистить semantic_memory (для пользователя или всё).
+
+    Args:
+        user_id: Если задан — только записи этого пользователя.
+    """
+    from app.services.semantic_memory import semantic_memory
+    from app.services.vector_store import vector_store
+
+    if not vector_store.available:
+        return {"status": "skipped", "reason": "chromadb unavailable", "deleted": 0}
+
+    deleted = semantic_memory.clear(user_id=user_id)
+    return {"status": "ok", "deleted": deleted, "user_id": user_id}
+
+
 @router.post("/test-llm", dependencies=[Depends(_require_admin)])
 async def test_llm(
     payload: dict[str, Any] = Body(...),

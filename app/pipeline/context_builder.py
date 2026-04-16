@@ -1,5 +1,6 @@
 """Модуль формирования обогащённого контекста запроса."""
 
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -9,17 +10,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chat import ChatMessage
 from app.models.user_profile import UserProfile
+from app.services.semantic_memory import semantic_memory
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
 class EnrichedQuery:
-    """Обогащённый запрос с контекстом сессии и профилем пользователя."""
+    """Обогащённый запрос с контекстом сессии и профилем пользователя.
+
+    semantic_context — список dict {text, score, timestamp} с релевантными
+    прошлыми Q/A из semantic_memory (Issue #25). Пустой, если ChromaDB
+    недоступен или совпадений нет.
+    """
 
     raw_text: str
     normalized_text: str
     user_profile: dict | None
     conversation_history: list[dict]       # [{role, content, timestamp}]
-    semantic_context: list = field(default_factory=list)   # пусто в MVP
+    semantic_context: list = field(default_factory=list)   # [{text, score, timestamp}]
     knowledge_context: list = field(default_factory=list)  # пусто в MVP
     metadata: dict = field(default_factory=dict)           # {timestamp, session_id, user_id}
 
@@ -54,6 +63,7 @@ class ContextBuilder:
     """Формирует EnrichedQuery из текста запроса, истории сессии и профиля пользователя."""
 
     MAX_MESSAGES = 10
+    SEMANTIC_TOP_K = 3
 
     async def build(
         self,
@@ -81,12 +91,15 @@ class ContextBuilder:
         # Загружаем профиль пользователя
         profile_dict = await self._load_profile(user_id, db)
 
+        # Semantic memory retrieval (Issue #25) — не блокирует при ошибке
+        semantic_context = await self._load_semantic_context(user_id, query)
+
         return EnrichedQuery(
             raw_text=query,
             normalized_text=normalized,
             user_profile=profile_dict,
             conversation_history=history,
-            semantic_context=[],
+            semantic_context=semantic_context,
             knowledge_context=[],
             metadata={
                 "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -94,6 +107,26 @@ class ContextBuilder:
                 "user_id": user_id,
             },
         )
+
+    async def _load_semantic_context(self, user_id: str, query: str) -> list[dict]:
+        """Получить релевантные прошлые Q/A из semantic_memory.
+
+        При любой ошибке / недоступности ChromaDB возвращает пустой список,
+        чтобы не ломать основной pipeline.
+        """
+        try:
+            records = await semantic_memory.recall(
+                user_id=user_id,
+                query=query,
+                top_k=self.SEMANTIC_TOP_K,
+            )
+            return [
+                {"text": r.text, "score": r.score, "timestamp": r.timestamp}
+                for r in records
+            ]
+        except Exception as exc:
+            logger.warning("ContextBuilder: semantic_memory.recall ошибка: %s", exc)
+            return []
 
     async def _load_history(self, session_id: str, db: AsyncSession) -> list[dict]:
         """Загружает последние MAX_MESSAGES сообщений сессии из БД."""

@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.chat import ChatMessage, ChatSession
 from app.pipeline.context_builder import ContextBuilder
 from app.pipeline.intent_detection import IntentDetector
+from app.pipeline.memory_update import memory_updater
 from app.pipeline.response_generator import ResponseGenerator
 from app.pipeline.router import Router
 from app.pipeline.safety_check import SafetyChecker
@@ -231,6 +232,12 @@ class PipelineOrchestrator:
                 response_text=response_text,
                 db=db,
             )
+            await memory_updater.update(
+                user_id=user_id,
+                request_id=None,
+                query=raw_query,
+                response=response_text,
+            )
             duration = int(time.monotonic() * 1000 - start_ms)
             return PipelineResult(
                 response_text=response_text,
@@ -262,6 +269,7 @@ class PipelineOrchestrator:
                     user_id=user_id,
                     entities=intent_result.entities,
                     db=db,
+                    query_text=raw_query,
                 )
                 tools_called = list(tool_result.results.keys())
                 structured_result["tool_data"] = tool_result.all_data()
@@ -315,6 +323,12 @@ class PipelineOrchestrator:
             raw_query=raw_query,
             response_text=response_text,
             db=db,
+        )
+        await memory_updater.update(
+            user_id=user_id,
+            request_id=None,
+            query=raw_query,
+            response=response_text,
         )
 
         duration = int(time.monotonic() * 1000 - start_ms)
