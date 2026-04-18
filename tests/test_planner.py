@@ -192,21 +192,29 @@ class TestPlannerPlanMethod:
 
         db = _make_db()
 
+        # LLM возвращает tool_calls (НЕ final_answer), чтобы цикл перешёл
+        # на итерацию 2, где проверка elapsed >= self._timeout выставит
+        # timeout_hit. Если бы ответ был final_answer — планер успешно
+        # завершился бы на итерации 1 без срабатывания таймаута.
         async def slow_generate(prompt, system_prompt=None, temperature=0.3):
-            await asyncio.sleep(1)
-            return _make_llm_response('{"thought": "ok", "final_answer": true}')
+            await asyncio.sleep(0.05)
+            return _make_llm_response(
+                '{"thought":"нужны данные","tool_calls":[{"tool":"get_user_profile","args":{}}]}'
+            )
 
         mock_client = MagicMock()
         mock_client.generate = AsyncMock(side_effect=slow_generate)
 
         with patch("app.pipeline.planner.llm_registry") as mock_registry:
             mock_registry.get_client.return_value = mock_client
-            result = await agent.plan(
-                query="тест",
-                user_id="u1",
-                user_context="контекст",
-                entities={},
-                db=db,
-            )
+            # Подменяем tool execution, чтобы не ходить в реальные tools
+            with patch.object(agent, "_execute_tool", AsyncMock(return_value={"ok": True})):
+                result = await agent.plan(
+                    query="тест",
+                    user_id="u1",
+                    user_context="контекст",
+                    entities={},
+                    db=db,
+                )
 
         assert result.timeout_hit is True
