@@ -7,14 +7,28 @@
 **Health Assistant** — локальный ассистент для анализа здоровья, физических нагрузок и тренировок.
 Работает **оффлайн** (без интернета), LLM через локальный Ollama.
 
-**Текущий этап:** Phase 2 (после MVP). Цель — приблизить систему к архитектуре v2:
-мульти-модельный роутинг, RAG (демо-набор), semantic memory, planner-route и
-template-планы, расширенное Data Processing, полноценная админка и stage-level
-streaming в чате.
+**Текущий этап:** Phase 2 **завершён** (issues #21–#37 закрыты и смёржены в main).
+Следующий этап — v3. Если новых инструкций нет — работаем в режиме поддержки:
+багфиксы, небольшие доработки, подготовка заглушек из списка «TODO v3» к
+реализации.
+
+Что реализовано в Phase 2:
+- Мульти-модельный **LLM Registry** (роли `intent_llm` / `safety_llm` / `response` / `planner`)
+- **ChromaDB + embeddings + RAG** (демо-набор, 5 категорий)
+- **Semantic Memory v1** (Q/A эмбеддинги, retrieval в Context Builder)
+- **Router v2** — 4 маршрута: `fast_direct_answer`, `tool_simple`, `template_plan`, `planner`
+- **Planner Agent** (LLM-loop с JSON tool-calls, до 5 итераций)
+- **Template Plan Executor** (weekly / overtraining / recovery / progress)
+- Расширенное **Data Processing** (recovery / strain / HR-zones / overtraining / training load / trends)
+- **Logging v2**: `llm_calls` + `stage_trace` + `llm_role_usage` + `rag_chunks_used`
+- **Stage Events + token streaming** по WebSocket
+- **Админ-панель v2**: Logs v2, LLM Config, KB browser, Semantic Memory, Diagnostics, Seed UI
+- **Integration tests** (Orchestrator v2) + unit-тесты критичных модулей
 
 **Ключевые документы:**
+- `README.md` — обзор проекта, быстрый старт, структура
 - `health_assistant_architecture_v2.yaml` — полная архитектура (референс, не менять без запроса)
-- `PHASE2_PLAN.md` — план текущего этапа (issues #21–#37, порядок, зависимости)
+- `PHASE2_PLAN.md` — исторический план Phase 2 (issues #21–#37, граф зависимостей)
 
 MVP-план (issues #1–#14) закрыт и удалён из репозитория — историю смотри в git log.
 
@@ -119,27 +133,27 @@ docker compose exec app python scripts/seed_knowledge.py
 - Классы: PascalCase (`IntentDetector`, `PlannerAgent`, `LLMRegistry`)
 - DTO: `{Name}Result` или `{Name}Event` (`PipelineResult`, `StageEvent`)
 
-## Принципы Phase 2 (КРИТИЧНО)
+## Отложено на v3 (TODO v3)
 
-Придерживаемся минимализма. **В этом этапе не реализуем**:
+Следующие подсистемы из `health_assistant_architecture_v2.yaml` **намеренно не
+реализованы** в Phase 2 и имеют заглушки/комментарии в коде. При поступлении
+задачи из этого списка — смотри состояние текущей заглушки, не ломай существующую
+функциональность.
 
-- **Data ingestion из реального API** (+ Anomaly detection, Deduplication) — откладывается.
+- **Data ingestion из реального API** (+ Anomaly detection, Deduplication).
   Источник данных — только Seed Generator v2.
 - **Safety Check v2** (контекстный LLM-анализ) — остаётся pattern-based.
   Комментарий-заглушка в `safety_check.py`.
 - **Output Validation v2** (hallucination check, medical advice check) — skipped во всех
   маршрутах, место в pipeline зарезервировано.
-- **Periodization** (макро/мезо/микроциклы) — заглушка-модуль с docstring "TODO v3".
+- **Periodization** (макро/мезо/микроциклы) — заглушка-модуль с docstring `TODO v3`.
 - **Proactive Alerts** (HRV drop, RHR spike, weekly summary) — не запускаются.
-  Пустой модуль `app/services/alerts.py` с описанием.
+  Пустой модуль `app/services/alerts.py` с описанием (если отсутствует — создать при задаче v3).
 - **Testing & Evaluation** (eval-датасеты, hallucination tests, latency benchmarks,
-  RAG quality) — только unit-тесты критичных модулей.
+  RAG quality) — только unit-тесты критичных модулей + интеграционные для orchestrator.
 
-Если архитектура описывает что-то из списка выше — **не реализовывать**, оставить заглушку
-с комментарием `TODO v3`.
-
-Knowledge Base (RAG) — **минимальный демо-набор** (20–40 чанков по всем 5 категориям YAML).
-Комментарий в коде / README, как расширять.
+Knowledge Base (RAG) — сейчас **минимальный демо-набор** (20–40 чанков по всем 5 категориям YAML).
+Расширять через `scripts/seed_knowledge.py` или админ-страницу `/admin/knowledge`.
 
 ## Работа с Ollama и моделями
 
@@ -176,18 +190,10 @@ User Query
 
 ## Issues и фазы
 
-Смотри `PHASE2_PLAN.md`. Issues пронумерованы **#21–#37** в GitHub (MVP закрыт — #1–#14,
-номера #15–#20 заняты прошлыми PR).
-Выполнять в порядке зависимостей, указанном в плане (секция «Оптимальный порядок исполнения»).
-
-**Старт этапа:**
-1. #21 — LLM Registry
-2. #23 — Schema v2 + migration
-3. #22 — ChromaDB + Embeddings
-4. #24 — Knowledge Base демо + retrieval
-5. #25 — Semantic Memory v1
-
-...далее по плану.
+- **MVP** (#1–#14) — закрыт, файлы плана удалены из репозитория.
+- **Phase 2** (#21–#37) — закрыт и смёржен в `main`. Детали и граф зависимостей —
+  в `PHASE2_PLAN.md` (оставлен как исторический документ).
+- **v3** — ещё не спланирован. Формируется из блоков «TODO v3» выше.
 
 ## Тесты
 
@@ -198,15 +204,17 @@ User Query
 - Фреймворк: `pytest` + `pytest-asyncio`
 - Запуск: `docker compose exec app pytest`
 
-## Что делать при получении задачи на issue
+## Что делать при получении задачи
 
-1. Прочитать issue полностью (acceptance criteria!).
-2. Прочитать `PHASE2_PLAN.md` — понять контекст issue в рамках этапа и её зависимости.
-3. Проверить, что предыдущие зависимости реализованы (см. граф зависимостей).
+1. Прочитать issue / запрос полностью (acceptance criteria!).
+2. Если задача относится к v3-блоку из раздела «Отложено на v3» — сначала
+   посмотреть, что есть сейчас в коде (заглушка / комментарий / пустой модуль),
+   и не сломать существующий контракт.
+3. Если задача — багфикс или доработка Phase 2, проверить, что не противоречит
+   архитектурному референсу (`health_assistant_architecture_v2.yaml`).
 4. Реализовать **минимально достаточно**, не добавлять лишнего.
-   Если архитектура YAML описывает что-то из списка «отложено» — не реализовывать.
 5. Проверить:
    - `docker compose up --build` запускается без ошибок
    - `alembic upgrade head` проходит
-   - Релевантные тесты проходят (`pytest`)
+   - Релевантные тесты проходят (`pytest`, включая `tests/integration`)
    - Чат `/chat` и админка `/admin` открываются
