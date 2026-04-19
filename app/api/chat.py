@@ -35,7 +35,7 @@ router = APIRouter(tags=["chat"])
 
 @router.post("/api/chat/sessions")
 async def create_session(
-    user_id: str = Query("user_1", description="ID пользователя"),
+    user_id: str = Query("test-user-001", description="ID пользователя"),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Создать новую чат-сессию."""
@@ -122,7 +122,7 @@ async def get_session_messages(
 async def websocket_chat(
     websocket: WebSocket,
     session_id: str,
-    user_id: str = Query("user_1", description="ID пользователя"),
+    user_id: str = Query("test-user-001", description="ID пользователя"),
     db: AsyncSession = Depends(get_db),
 ) -> None:
     """WebSocket endpoint для чата.

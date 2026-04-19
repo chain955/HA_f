@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 _MAX_ITERATIONS = 5
 _MAX_TOOL_CALLS_PER_ITER = 3
-_TIMEOUT_TOTAL = 60.0  # секунды
+_TIMEOUT_TOTAL = 120.0  # секунды
 
 _TOOLS_DESCRIPTION = """\
 - get_activities: тренировки пользователя. args: {"days": int}

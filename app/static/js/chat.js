@@ -39,7 +39,7 @@ const STAGE_INFO = {
 
 // --- State ---
 let currentSessionId = null;
-let currentUserId = 'user_1';
+let currentUserId = 'test-user-001';
 let ws = null;
 let lastDebug = null;
 let streamingBuffer = '';
@@ -458,7 +458,7 @@ async function createNewSession() {
 document.getElementById('new-session-btn').addEventListener('click', createNewSession);
 
 userIdInput.addEventListener('change', async () => {
-    currentUserId = userIdInput.value.trim() || 'user_1';
+    currentUserId = userIdInput.value.trim() || 'test-user-001';
     await loadSessions();
     if (!currentSessionId) await createNewSession();
 });
@@ -483,7 +483,7 @@ function hideEmptyState() {
 
 // --- Init ---
 async function init() {
-    currentUserId = userIdInput.value.trim() || 'user_1';
+    currentUserId = userIdInput.value.trim() || 'test-user-001';
     await loadSessions();
 
     const resp = await fetch(`${API_BASE}/api/chat/sessions?user_id=${encodeURIComponent(currentUserId)}`);

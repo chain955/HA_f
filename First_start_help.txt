@@ -1,12 +1,30 @@
 Commit "- ./app:/project/app" in docker-compose.yml for prod.
 
+
+# 1. Настроить .env
+cp .env.example .env
+# отредактировать при необходимости (модели, креды админки)
+
+# 2. Собрать и запустить
 docker compose up --build
 или
 docker compose up --build -d
 
+# Запуск тестов (не обязательно)
 docker compose exec app pytest
+
+# 3. Применить миграции
 docker compose exec app alembic upgrade head
-docker compose exec app python scripts/seed_knowledge.py
+
+# 4. Засеять тестовые данные (по умолчанию — 30 дней, 1 профиль, без аномалий)
 docker compose exec app python scripts/seed_data.py
 
+# 5. Засеять демо-Knowledge Base (RAG)
+docker compose exec app python scripts/seed_knowledge.py
+
+
 http://localhost:8000
+
+
+
+
