@@ -1,0 +1,12 @@
+Commit "- ./app:/project/app" in docker-compose.yml for prod.
+
+docker compose up --build
+или
+docker compose up --build -d
+
+docker compose exec app pytest
+docker compose exec app alembic upgrade head
+docker compose exec app python scripts/seed_knowledge.py
+docker compose exec app python scripts/seed_data.py
+
+http://localhost:8000

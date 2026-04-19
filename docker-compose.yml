@@ -5,12 +5,12 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./data:/app/data
-      - ./data/chroma:/app/data/chroma
+      - ./data:/data
+      - ./app:/project/app
     env_file:
       - .env
     environment:
-      - DB_PATH=/app/data/health_assistant.db
+      - DB_PATH=/data/health_assistant.db
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s

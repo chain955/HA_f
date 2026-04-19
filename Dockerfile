@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-WORKDIR /app
+WORKDIR /project
 
 # Установка зависимостей системы
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -15,7 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Директория для данных
-RUN mkdir -p /app/data
+RUN mkdir /data
 
 EXPOSE 8000
 

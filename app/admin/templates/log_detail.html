@@ -305,6 +305,9 @@
                     {% if call.http_status %}HTTP {{ call.http_status }}{% endif %}
                     {% if call.stream %} · streamed{% endif %}
                   </span>
+                  {% if call.response_body_json %}
+                  <button class="llm-copy-btn" data-wrap-target="llm-{{ loop.index }}-resp-json-code">Wrap \n</button>
+                  {% endif %}
                   <button class="llm-copy-btn" data-copy-target="llm-{{ loop.index }}-resp-json-code">Copy</button>
                 </div>
                 {% if call.response_body_json %}

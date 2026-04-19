@@ -18,9 +18,7 @@ env/
 .env
 
 # База данных
-data/*.db
-data/*.db-shm
-data/*.db-wal
+data/
 
 # Тесты / покрытие
 .pytest_cache/
