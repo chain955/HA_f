@@ -286,6 +286,9 @@
                 <div class="llm-section-title">
                   <span>Raw HTTP request body</span>
                   <span class="meta">{{ call.endpoint or '' }}</span>
+                  {% if call.request_body_json %}
+                  <button class="llm-copy-btn" data-wrap-target="llm-{{ loop.index }}-req-json-code">Wrap \n</button>
+                  {% endif %}
                   <button class="llm-copy-btn" data-copy-target="llm-{{ loop.index }}-req-json-code">Copy</button>
                 </div>
                 {% if call.request_body_json %}
@@ -501,10 +504,18 @@ function toggleLLMCall(id) {
 
 // ---------- LLM Calls: sub-tab switching, JSON highlight, copy ----------
 function highlightJson(pre) {
-  const raw = pre.textContent;
+  // Оригинальный текст сохраняем в data-raw один раз — чтобы «Wrap \n»
+  // мог корректно переключаться туда-обратно без потери исходника.
+  if (pre.dataset.raw === undefined) pre.dataset.raw = pre.textContent;
+  const raw = pre.dataset.raw;
   if (!raw) return;
-  // Базовая подсветка: строки, числа, булевы/null, ключи.
-  const escaped = raw
+  // Режим wrap: заменяем escape-последовательности \n и \t на реальные
+  // переводы строк/табы — длинные prompt в request_body становятся читаемыми.
+  const wrap = pre.dataset.wrap === '1';
+  const text = wrap
+    ? raw.replace(/\\n/g, '\n').replace(/\\t/g, '    ')
+    : raw;
+  const escaped = text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
@@ -543,14 +554,16 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  // Copy-to-clipboard
-  document.querySelectorAll('.llm-copy-btn').forEach(btn => {
+  // Copy-to-clipboard (copy-кнопки помечены атрибутом data-copy-target)
+  document.querySelectorAll('.llm-copy-btn[data-copy-target]').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.preventDefault();
       const targetId = btn.getAttribute('data-copy-target');
       const el = document.getElementById(targetId);
       if (!el) return;
-      const text = el.tagName === 'TEXTAREA' ? el.value : el.textContent;
+      const text = el.tagName === 'TEXTAREA'
+        ? el.value
+        : (el.dataset.raw !== undefined ? el.dataset.raw : el.textContent);
       try {
         await navigator.clipboard.writeText(text);
         const old = btn.textContent;
@@ -559,6 +572,21 @@ document.addEventListener('DOMContentLoaded', () => {
       } catch (err) {
         btn.textContent = 'Copy failed';
       }
+    });
+  });
+
+  // Wrap \n: переключает отображение JSON-блока между «сырым» видом и
+  // режимом, в котором \n и \t внутри строк заменяются на реальные переносы.
+  document.querySelectorAll('.llm-copy-btn[data-wrap-target]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      const targetId = btn.getAttribute('data-wrap-target');
+      const pre = document.getElementById(targetId);
+      if (!pre) return;
+      const wrapped = pre.dataset.wrap === '1';
+      pre.dataset.wrap = wrapped ? '0' : '1';
+      btn.textContent = wrapped ? 'Wrap \\n' : 'Raw';
+      highlightJson(pre);
     });
   });
 });
