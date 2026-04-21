@@ -27,6 +27,7 @@ from app.services.llm_registry import llm_registry
 from app.services.tool_call_logger import tool_call_logger
 from app.tools.db_tools import get_activities, get_daily_facts, get_user_profile
 from app.tools.rag_retrieve import rag_retrieve
+from app.tools.time_utils import current_datetime_str
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,8 @@ _SYSTEM_PROMPT_TEMPLATE = """\
   "thought": "обоснование финального ответа",
   "final_answer": true
 }}
+
+Текущая дата и время сервера: {current_datetime}
 
 Доступные tools:
 {tools}
@@ -129,6 +132,7 @@ class PlannerAgent:
         system_prompt = _SYSTEM_PROMPT_TEMPLATE.format(
             tools=_TOOLS_DESCRIPTION,
             user_context=user_context,
+            current_datetime=current_datetime_str(),
             max_tool_calls=self._max_tool_calls_per_iter,
             max_iterations=self._max_iterations,
         )

@@ -11,6 +11,8 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from app.tools.time_utils import current_datetime_str
+
 if TYPE_CHECKING:
     from app.services.llm_registry import LLMRegistry
 
@@ -249,10 +251,12 @@ def _parse_llm_json(text: str) -> dict | None:
     return None
 
 
-_INTENT_SYSTEM_PROMPT = """\
+_INTENT_SYSTEM_PROMPT_TEMPLATE = """\
 Ты классифицируешь намерение пользователя фитнес-ассистента.
 Ответь строго в JSON-формате (без текста вне JSON):
-{"intent": "...", "confidence": 0.0, "entities": {}}
+{{"intent": "...", "confidence": 0.0, "entities": {{}}}}
+
+Текущая дата и время сервера: {current_datetime}
 
 Доступные намерения:
 - data_retrieval: запрос исторических данных о тренировках и активностях
@@ -263,6 +267,10 @@ _INTENT_SYSTEM_PROMPT = """\
 - general_chat: приветствие, благодарность, общий разговор
 - emergency: экстренная ситуация, острая боль, угроза жизни
 - off_topic: вопрос не по теме здоровья и фитнеса"""
+
+
+def _build_intent_system_prompt() -> str:
+    return _INTENT_SYSTEM_PROMPT_TEMPLATE.format(current_datetime=current_datetime_str())
 
 
 def _build_intent_messages(
@@ -330,7 +338,7 @@ class IntentDetector:
             client = llm_registry.get_client("intent_llm")
             llm_response = await client.chat(
                 messages=messages,
-                system_prompt=_INTENT_SYSTEM_PROMPT,
+                system_prompt=_build_intent_system_prompt(),
                 temperature=0.1,
                 max_tokens=200,
                 format="json",

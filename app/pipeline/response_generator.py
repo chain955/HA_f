@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from app.pipeline.context_builder import EnrichedQuery
 from app.services.llm_registry import llm_registry
 from app.services.llm_service import LLMResponse
+from app.tools.time_utils import current_datetime_str
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,9 @@ _SAFETY_WARNING_SUFFIX = (
 _PLANNER_ROLE_INTENTS = {"plan_request"}
 _RAG_INTENTS = {"plan_request", "health_concern", "data_analysis"}
 
-_BASE_SYSTEM_PROMPT = """Ты — дружелюбный фитнес-ассистент. Отвечай на русском.
+_BASE_SYSTEM_PROMPT_TEMPLATE = """Ты — дружелюбный фитнес-ассистент. Отвечай на русском.
+
+Текущая дата и время сервера: {current_datetime}
 
 Правила ответа:
 - Используй ТОЛЬКО данные из раздела «Результаты анализа» (отдельное system-сообщение).
@@ -46,8 +49,19 @@ _BASE_SYSTEM_PROMPT = """Ты — дружелюбный фитнес-ассис
 - Форматируй в Markdown: краткий вывод → подробности → рекомендации.
 - Максимум ~500 токенов."""
 
-_FAST_PATH_SYSTEM = """Ты — дружелюбный фитнес-ассистент. Отвечай на русском.
+_FAST_PATH_SYSTEM_TEMPLATE = """Ты — дружелюбный фитнес-ассистент. Отвечай на русском.
+
+Текущая дата и время сервера: {current_datetime}
+
 Будь конкретен и краток. Максимум ~200 токенов."""
+
+
+def _base_system_prompt() -> str:
+    return _BASE_SYSTEM_PROMPT_TEMPLATE.format(current_datetime=current_datetime_str())
+
+
+def _fast_path_system_prompt() -> str:
+    return _FAST_PATH_SYSTEM_TEMPLATE.format(current_datetime=current_datetime_str())
 
 
 def _select_role(intent: str) -> str:
@@ -236,7 +250,7 @@ class ResponseGenerator:
         передаёт историю диалога + текущий запрос как role=user/assistant.
         """
         system_prompts = [
-            _FAST_PATH_SYSTEM,
+            _fast_path_system_prompt(),
             _build_user_profile_system(enriched_query.user_profile),
         ]
         messages = _build_chat_history(enriched_query.conversation_history)
@@ -287,7 +301,7 @@ class ResponseGenerator:
                 rag_chunks = list(enriched_query.knowledge_context) + rag_chunks
 
         system_prompts: list[str] = [
-            _BASE_SYSTEM_PROMPT,
+            _base_system_prompt(),
             _build_user_profile_system(enriched_query.user_profile),
         ]
         context_system = _build_context_system(
