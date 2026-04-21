@@ -32,12 +32,12 @@ logger = logging.getLogger(__name__)
 
 _MAX_ITERATIONS = 5
 _MAX_TOOL_CALLS_PER_ITER = 3
-_TIMEOUT_TOTAL = 120.0  # секунды
+_TIMEOUT_TOTAL = 360.0  # секунды
 _MAX_TOOL_RESULT_CHARS = 1500  # лимит сырых данных tool в истории итераций
 
 _TOOLS_DESCRIPTION = """\
 - get_activities: тренировки пользователя. args: {"days": int}
-- get_daily_facts: дневные метрики здоровья (HRV, ЧСС, сон). args: {"days": int}
+- get_daily_facts: дневные метрики здоровья (HRV, ЧСС, сон, шаги). args: {"days": int}
 - get_user_profile: профиль пользователя. args: {}
 - compute_recovery: recovery score (последние 14 дней). args: {}
 - check_overtraining: признаки перетренированности. args: {}
