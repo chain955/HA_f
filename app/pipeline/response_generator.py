@@ -174,7 +174,7 @@ def _format_rag_block(rag_chunks: list[dict]) -> str:
         if isinstance(chunk, dict):
             category = chunk.get("category", "")
             confidence = chunk.get("confidence", "")
-            text = (chunk.get("text") or "")[:250]
+            text = (chunk.get("text") or "")[:500]
             lines.append(f"- [{category}, {confidence}] {text}")
     return "\n".join(lines) + "\n\n"
 
@@ -184,7 +184,7 @@ def _format_semantic_block(semantic_context: list) -> str:
         return ""
     lines = ["## Релевантные прошлые ответы:"]
     for item in semantic_context[:3]:
-        text = (item.get("text") or "")[:200]
+        text = (item.get("text") or "")[:500]
         lines.append(f"- {text}")
     return "\n".join(lines) + "\n\n"
 

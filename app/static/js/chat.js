@@ -301,29 +301,45 @@ toggleDebugBtn.addEventListener('click', () => {
 
 // --- WebSocket ---
 function connectWS(sessionId, userId) {
-    if (ws) { ws.close(); ws = null; }
+    // Нейтрализуем обработчики ПЕРЕД закрытием — onclose не сработает
+    if (ws) {
+        ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null;
+        ws.close();
+        ws = null;
+    }
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+
     setConnStatus('connecting');
     sendBtn.disabled = true;
 
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     const url = `${proto}://${location.host}/ws/chat/${sessionId}?user_id=${encodeURIComponent(userId)}`;
-    ws = new WebSocket(url);
+
+    const socket = new WebSocket(url); // локальная ссылка для защиты от stale-замыкания
+    ws = socket;
 
     ws.onopen = () => {
+        if (ws !== socket) return; // stale — игнорируем
         setConnStatus('connected');
         sendBtn.disabled = false;
         msgInput.focus();
     };
 
     ws.onmessage = (ev) => {
+        if (ws !== socket) return;
         let data;
         try { data = JSON.parse(ev.data); } catch { return; }
         handleWsMessage(data);
     };
 
-    ws.onerror = () => { setConnStatus('disconnected'); sendBtn.disabled = true; };
+    ws.onerror = () => {
+        if (ws !== socket) return;
+        setConnStatus('disconnected');
+        sendBtn.disabled = true;
+    };
+
     ws.onclose = () => {
+        if (ws !== socket) return; // stale — не планируем переподключение
         setConnStatus('disconnected');
         sendBtn.disabled = true;
         reconnectTimer = setTimeout(() => {

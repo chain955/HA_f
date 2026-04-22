@@ -210,7 +210,7 @@ class TestLogLLMCalls:
             prompt_length=5200,
             response_length=12,
             duration_ms=800,
-            request_body={"model": "qwen2.5:14b", "stream": True, "options": {"temperature": 0.7}},
+            request_body={"model": "qwen2.5:14b", "stream": True, "think": False, "options": {"temperature": 0.7}},
             response_body={"done": True, "done_reason": "stop", "eval_count": 456},
             error=None,
             iteration=None,

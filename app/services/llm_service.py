@@ -89,6 +89,7 @@ class OllamaClient:
             "model": self._model,
             "prompt": prompt,
             "stream": False,
+            "think": False,
             "options": {"temperature": temperature},
         }
         if system_prompt:
@@ -137,6 +138,7 @@ class OllamaClient:
             "model": self._model,
             "messages": msgs,
             "stream": False,
+            "think": False,
             "options": {"temperature": temperature},
         }
         if max_tokens:
@@ -378,6 +380,7 @@ class OllamaClient:
             "model": self._model,
             "prompt": prompt,
             "stream": True,
+            "think": False,
             "options": {"temperature": temperature},
         }
         if system_prompt:
@@ -459,6 +462,7 @@ class OllamaClient:
         # Ollama (done_reason, eval_count, prompt_eval_count и т.д.) + агрегат.
         response_body: dict[str, Any] = {
             "stream": True,
+            "think": False,
             "chunks_received": chunk_count,
             "response": content,
         }
@@ -525,6 +529,7 @@ class OllamaClient:
             "model": self._model,
             "messages": msgs,
             "stream": True,
+            "think": False,
             "options": {"temperature": temperature},
         }
         if max_tokens:
@@ -603,6 +608,7 @@ class OllamaClient:
 
         response_body: dict[str, Any] = {
             "stream": True,
+            "think": False,
             "chunks_received": chunk_count,
             "message": {"content": content},
         }
