@@ -9,6 +9,7 @@ from app.pipeline.response_generator import (
     GeneratorResult,
     ResponseGenerator,
     _SAFETY_WARNING_SUFFIX,
+    _build_context_system,
     _extract_rag_chunks,
     _format_conversation_history,
     _format_rag_block,
@@ -16,6 +17,7 @@ from app.pipeline.response_generator import (
     _format_structured_result,
     _format_user_profile,
     _select_role,
+    _strip_presented_keys,
 )
 from app.services.llm_service import LLMResponse
 
@@ -119,6 +121,21 @@ class TestRagFormatting:
         assert _extract_rag_chunks(None) == []
         assert _extract_rag_chunks({}) == []
 
+    def test_extract_rag_chunks_from_tool_data(self) -> None:
+        """RAG-чанки внутри tool_data (маршрут tool_simple) тоже извлекаются."""
+        structured = {
+            "tool_data": {
+                "rag_retrieve": [
+                    {"text": "контент", "category": "training_principles",
+                     "confidence": "high", "score": 0.8}
+                ],
+                "get_activities": [{"id": 1}],
+            }
+        }
+        chunks = _extract_rag_chunks(structured)
+        assert len(chunks) == 1
+        assert chunks[0]["text"] == "контент"
+
     def test_format_rag_block_empty(self) -> None:
         assert _format_rag_block([]) == ""
 
@@ -138,6 +155,122 @@ class TestRagFormatting:
         semantic = [{"text": "прошлый ответ про тренировки", "score": 0.8, "timestamp": "2026-04-10"}]
         block = _format_semantic_block(semantic)
         assert "прошлые" in block.lower() or "прошлый" in block.lower()
+
+
+class TestStripPresentedKeys:
+    """Тесты фильтрации ключей, уже отрисованных в отдельных system-блоках."""
+
+    def test_strips_get_user_profile_always(self) -> None:
+        """get_user_profile всегда вырезается — профиль отдельным блоком."""
+        structured = {
+            "get_user_profile": {"name": "Иван", "age": 30},
+            "compute_recovery": {"score": 72},
+        }
+        cleaned = _strip_presented_keys(structured, strip_rag=False)
+        assert cleaned == {"compute_recovery": {"score": 72}}
+
+    def test_strips_rag_keys_when_strip_rag_true(self) -> None:
+        """rag_retrieve* вырезаются, когда их уже показали в RAG-блоке."""
+        structured = {
+            "rag_retrieve_training_principles": [{"text": "x"}],
+            "rag_retrieve": [{"text": "y"}],
+            "compute_recovery": {"score": 72},
+        }
+        cleaned = _strip_presented_keys(structured, strip_rag=True)
+        assert cleaned == {"compute_recovery": {"score": 72}}
+
+    def test_keeps_rag_keys_when_strip_rag_false(self) -> None:
+        """Если RAG-блок не сформирован — ключи остаются в JSON."""
+        structured = {
+            "rag_retrieve_training_principles": [{"text": "x"}],
+            "compute_recovery": {"score": 72},
+        }
+        cleaned = _strip_presented_keys(structured, strip_rag=False)
+        assert "rag_retrieve_training_principles" in cleaned
+        assert "compute_recovery" in cleaned
+
+    def test_handles_nested_tool_data(self) -> None:
+        """Фильтрация работает внутри tool_data (структура tool_simple)."""
+        structured = {
+            "tool_data": {
+                "get_user_profile": {"name": "Иван"},
+                "rag_retrieve": [{"text": "x"}],
+                "get_activities": [{"id": 1}],
+            },
+        }
+        cleaned = _strip_presented_keys(structured, strip_rag=True)
+        assert cleaned == {"tool_data": {"get_activities": [{"id": 1}]}}
+
+    def test_drops_empty_tool_data(self) -> None:
+        """Если tool_data опустел после фильтрации — сам ключ удаляем."""
+        structured = {
+            "tool_data": {
+                "get_user_profile": {"name": "Иван"},
+                "rag_retrieve": [{"text": "x"}],
+            },
+        }
+        cleaned = _strip_presented_keys(structured, strip_rag=True)
+        assert cleaned is None
+
+    def test_returns_none_for_empty_input(self) -> None:
+        assert _strip_presented_keys(None, strip_rag=True) is None
+        assert _strip_presented_keys({}, strip_rag=True) == {} or \
+               _strip_presented_keys({}, strip_rag=True) is None
+
+    def test_build_context_system_avoids_rag_duplication(self) -> None:
+        """Спец-блок RAG сформирован → rag_retrieve* НЕ должен появляться в JSON."""
+        rag_chunks = [
+            {"text": "sleep matters", "category": "recovery_science",
+             "confidence": "high", "score": 0.9}
+        ]
+        structured = {
+            "rag_retrieve_recovery_science": rag_chunks,
+            "compute_recovery": {"score": 72},
+        }
+        system = _build_context_system(
+            structured_result=structured,
+            rag_chunks=rag_chunks,
+            semantic_context=[],
+        )
+        assert system is not None
+        assert "## Релевантные знания (RAG)" in system
+        assert "## Результаты анализа" in system
+        assert "compute_recovery" in system
+        # Ключ RAG не должен попасть в блок «Результаты анализа»
+        assert "rag_retrieve_recovery_science" not in system
+
+    def test_build_context_system_avoids_profile_duplication(self) -> None:
+        """get_user_profile в structured_result НЕ должен попадать в JSON."""
+        structured = {
+            "get_user_profile": {"name": "Иван", "age": 30},
+            "compute_recovery": {"score": 72},
+        }
+        system = _build_context_system(
+            structured_result=structured,
+            rag_chunks=[],
+            semantic_context=[],
+        )
+        assert system is not None
+        assert "## Результаты анализа" in system
+        assert "compute_recovery" in system
+        assert "get_user_profile" not in system
+        assert "Иван" not in system
+
+    def test_build_context_system_only_duplicates_returns_none(self) -> None:
+        """Если в structured_result только дубли — блок «Результаты анализа» не нужен."""
+        rag_chunks = [{"text": "x", "category": "c", "confidence": "h", "score": 0.9}]
+        structured = {
+            "get_user_profile": {"name": "Иван"},
+            "rag_retrieve_training_principles": rag_chunks,
+        }
+        system = _build_context_system(
+            structured_result=structured,
+            rag_chunks=rag_chunks,
+            semantic_context=[],
+        )
+        assert system is not None
+        assert "## Релевантные знания (RAG)" in system
+        assert "## Результаты анализа" not in system
 
 
 @pytest.mark.asyncio
