@@ -4,7 +4,12 @@ from datetime import date, datetime, timedelta
 
 import pytest
 
-from app.tools.time_utils import current_datetime_str, resolve_time_range
+from app.tools.time_utils import (
+    build_time_range,
+    current_datetime_str,
+    extract_time_range_label,
+    resolve_time_range,
+)
 
 
 @pytest.fixture
@@ -105,3 +110,67 @@ class TestCurrentDatetimeStr:
         result = current_datetime_str()
         assert len(result) > 0
         assert "ISO:" in result
+
+
+class TestExtractTimeRangeLabel:
+    """Извлечение нормализованного time_range label из свободного текста."""
+
+    def test_сегодня(self) -> None:
+        assert extract_time_range_label("Что у меня сегодня?") == "сегодня"
+
+    def test_вчера(self) -> None:
+        assert extract_time_range_label("Сколько шагов вчера") == "вчера"
+
+    def test_за_неделю(self) -> None:
+        assert extract_time_range_label("Покажи тренировки за неделю") == "за неделю"
+
+    def test_за_месяц(self) -> None:
+        assert extract_time_range_label("Прогресс за месяц") == "за месяц"
+
+    def test_range_3_to_4_days(self) -> None:
+        """«3-4 дня» → за последние 3 дня (консервативный минимум)."""
+        label = extract_time_range_label("пробежки за 3-4 дня")
+        assert label == "за последние 3 дней"
+
+    def test_за_10_дней(self) -> None:
+        assert extract_time_range_label("за 10 дней") == "за последние 10 дней"
+
+    def test_за_последние_14_дней(self) -> None:
+        assert (
+            extract_time_range_label("покажи за последние 14 дней")
+            == "за последние 14 дней"
+        )
+
+    def test_month_name(self) -> None:
+        assert extract_time_range_label("что было в январе") == "январь"
+        assert extract_time_range_label("события в мае") == "май"
+
+    def test_no_match_returns_none(self) -> None:
+        assert extract_time_range_label("привет как дела") is None
+
+
+class TestBuildTimeRange:
+    """Построение TimeRange из нормализованного label."""
+
+    def test_none_returns_none(self) -> None:
+        assert build_time_range(None) is None
+
+    def test_empty_returns_none(self) -> None:
+        assert build_time_range("") is None
+
+    def test_сегодня_builds_today(self) -> None:
+        tr = build_time_range("сегодня")
+        assert tr is not None
+        assert tr.date_from == date.today()
+        assert tr.date_to == date.today()
+        assert tr.label == "сегодня"
+
+    def test_за_неделю_builds_7_days(self) -> None:
+        tr = build_time_range("за неделю")
+        assert tr is not None
+        assert tr.days == 7
+
+    def test_numeric_days(self) -> None:
+        tr = build_time_range("за последние 14 дней")
+        assert tr is not None
+        assert tr.days == 14
