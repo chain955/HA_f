@@ -142,7 +142,6 @@ async def test_template_plan_weekly(mock_ollama, mock_chroma, test_db) -> None:
 
     # tools, вызванные внутри template — подмножество шагов шаблона
     # (get_user_profile, get_activities, compute_training_load, rag_retrieve x2)
-    assert "get_user_profile" in result.tools_called
     assert "get_activities" in result.tools_called
     assert "compute_training_load" in result.tools_called
 

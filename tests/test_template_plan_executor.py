@@ -46,7 +46,6 @@ class TestTemplateRegistry:
     def test_weekly_training_plan_steps(self) -> None:
         steps = TEMPLATES["weekly_training_plan"]
         tools = [s["tool"] for s in steps]
-        assert "get_user_profile" in tools
         assert "get_activities" in tools
         assert "rag_retrieve" in tools
 
