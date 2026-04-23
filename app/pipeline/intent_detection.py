@@ -11,6 +11,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from app.pipeline.slot_state import SlotState, slot_state_from_entities
 from app.tools.time_utils import current_datetime_str
 
 if TYPE_CHECKING:
@@ -36,13 +37,19 @@ _VALID_INTENTS = {
 
 @dataclass
 class IntentResult:
-    """Результат классификации намерения."""
+    """Результат классификации намерения.
+
+    entities — legacy dict (обратная совместимость с router/template_executor).
+    slots — типизированный SlotState с нормализованным TimeRange и enum'ами.
+    Оба поля согласованы и заполняются одновременно.
+    """
 
     intent: str           # тип намерения
     confidence: float     # уверенность от 0.0 до 1.0
-    entities: dict        # извлечённые сущности
+    entities: dict        # извлечённые сущности (legacy dict)
     raw_query: str        # исходный запрос
     llm_used: bool = False  # True если была выполнена LLM stage 2
+    slots: SlotState = field(default_factory=SlotState)  # типизированное состояние
 
 
 # Правила классификации: (паттерн, intent, confidence)
@@ -221,6 +228,7 @@ def _detect_rule_based(query: str) -> IntentResult:
         entities=entities,
         raw_query=query,
         llm_used=False,
+        slots=slot_state_from_entities(entities, raw_query=query),
     )
 
 
@@ -389,4 +397,5 @@ class IntentDetector:
             entities=merged_entities,
             raw_query=query,
             llm_used=True,
+            slots=slot_state_from_entities(merged_entities, raw_query=query),
         )

@@ -1,7 +1,13 @@
 """Диспетчер инструментов (Tool Executor).
 
-Вызывает нужные tools по именам, разрешает параметры из сущностей запроса,
-агрегирует результаты.
+Вызывает нужные tools по именам, валидирует аргументы через Pydantic-схемы
+(app/tools/schemas.py) и агрегирует результаты.
+
+Границы контракта:
+— intent detection отдаёт SlotState (нормализованные слоты);
+— ToolExecutor конвертирует слоты в типизированный ToolArgs и валидирует;
+— при ValidationError tool получает ToolResult(success=False, error=...)
+  вместо тихого падения глубже.
 """
 
 import logging
@@ -10,8 +16,10 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
 
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.pipeline.slot_state import SlotState, slot_state_from_entities
 from app.services.tool_call_logger import tool_call_logger
 from app.tools.db_tools import (
     ToolResult,
@@ -23,9 +31,29 @@ from app.tools.db_tools import (
     update_profile,
 )
 from app.tools.rag_retrieve import rag_retrieve
-from app.tools.time_utils import resolve_time_range
+from app.tools.schemas import (
+    TOOL_ARGS_REGISTRY,
+    CheckOvertrainingArgs,
+    ComputeRecoveryArgs,
+    ComputeStrainArgs,
+    GetActivitiesArgs,
+    GetActivitiesBySportArgs,
+    GetDailyFactsArgs,
+    GetUserProfileArgs,
+    LogActivityArgs,
+    RagRetrieveArgs,
+    UpdateProfileArgs,
+    validate_tool_args,
+)
 
 logger = logging.getLogger(__name__)
+
+
+# Дефолтное окно для compute_recovery / check_overtraining, когда пользователь
+# не указал диапазон. Исторически было захардкожено в 14 дней.
+_DEFAULT_WINDOW_DAYS = 14
+_MIN_WINDOW_DAYS = 3
+_MAX_WINDOW_DAYS = 60
 
 
 @dataclass
@@ -54,8 +82,8 @@ class ToolExecutorResult:
 class ToolExecutor:
     """Диспетчер инструментов — вызывает tools по именам из RouteResult.
 
-    Параметры для каждого tool (date_from, date_to, sport_type) разрешаются
-    из entities, извлечённых Intent Detection'ом.
+    Аргументы для каждого tool собираются из SlotState (или legacy entities
+    dict) и валидируются через Pydantic перед вызовом.
     """
 
     async def execute(
@@ -65,181 +93,276 @@ class ToolExecutor:
         entities: dict,
         db: AsyncSession,
         query_text: str | None = None,
+        slots: SlotState | None = None,
     ) -> ToolExecutorResult:
         """Выполнить список tool-вызовов.
 
         Args:
             tool_calls: Список имён tools (из RouteResult.tool_calls).
             user_id: Идентификатор пользователя.
-            entities: Сущности из IntentResult (time_range, sport_type и т.д.).
+            entities: Legacy entities dict (сохранён для совместимости).
             db: Асинхронная сессия SQLAlchemy.
+            query_text: Исходный текст запроса (нужен для rag_retrieve).
+            slots: SlotState — если передан, используется вместо entities.
+                  Иначе слоты строятся из entities (back-compat).
 
         Returns:
             ToolExecutorResult с результатами всех вызовов.
         """
-        # Разрешаем time_range → конкретные даты
-        time_range_entity = entities.get("time_range")
-        date_from, date_to = resolve_time_range(time_range_entity)
-        sport_type: str | None = entities.get("sport_type")
+        if slots is None:
+            slots = slot_state_from_entities(entities, raw_query=query_text or "")
 
         logger.info(
-            "ToolExecutor: вызываем %s | user=%s date_from=%s date_to=%s sport=%s",
-            tool_calls, user_id, date_from, date_to, sport_type,
+            "ToolExecutor: вызываем %s | user=%s time_range=%s sport=%s",
+            tool_calls,
+            user_id,
+            slots.time_range.label if slots.time_range else None,
+            slots.sport_type.value if slots.sport_type else None,
         )
 
         executor_result = ToolExecutorResult()
 
-        for tool_name in tool_calls:
-            args = self._build_args_snapshot(
+        for requested_tool in tool_calls:
+            # Fallback: get_activities_by_sport без sport_type → get_activities
+            # (сохраняем поведение до Phase 2, пока clarification loop не готов).
+            tool_name = requested_tool
+            if tool_name == "get_activities_by_sport" and slots.sport_type is None:
+                logger.warning(
+                    "ToolExecutor: get_activities_by_sport без sport_type, "
+                    "делаем fallback на get_activities"
+                )
+                tool_name = "get_activities"
+
+            args_model, args_snapshot, validation_error = self._build_args(
                 tool_name=tool_name,
                 user_id=user_id,
-                date_from=date_from,
-                date_to=date_to,
-                sport_type=sport_type,
+                slots=slots,
                 query_text=query_text,
-                entities=entities,
             )
+
             start_ms = time.monotonic() * 1000
-            result = await self._dispatch(
-                tool_name=tool_name,
-                user_id=user_id,
-                date_from=date_from,
-                date_to=date_to,
-                sport_type=sport_type,
-                db=db,
-                query_text=query_text,
-                entities=entities,
-            )
+            if validation_error is not None:
+                logger.warning(
+                    "ToolExecutor: args для %s не прошли валидацию: %s",
+                    tool_name, validation_error,
+                )
+                result = ToolResult(
+                    tool_name=tool_name,
+                    success=False,
+                    data=None,
+                    error=f"Некорректные аргументы: {validation_error}",
+                )
+            else:
+                result = await self._dispatch(
+                    tool_name=tool_name,
+                    args=args_model,
+                    db=db,
+                )
             duration_ms = int(time.monotonic() * 1000 - start_ms)
             tool_call_logger.record(
                 name=tool_name,
                 source="tool_executor",
-                args=args,
+                args=args_snapshot,
                 result=result.data if result.success else None,
                 success=result.success,
                 error=result.error,
                 duration_ms=duration_ms,
             )
-            executor_result.results[tool_name] = result
+            # Ключом в results остаётся имя tool'а, которое запросил роутер —
+            # иначе потребитель (response_generator) не найдёт свой tool.
+            executor_result.results[requested_tool] = result
 
         return executor_result
 
+    # -----------------------------------------------------------------
+    # Построение и валидация аргументов
+    # -----------------------------------------------------------------
+
     @staticmethod
-    def _build_args_snapshot(
+    def _build_args(
         tool_name: str,
         user_id: str,
-        date_from: date,
-        date_to: date,
-        sport_type: str | None,
+        slots: SlotState,
         query_text: str | None,
-        entities: dict | None,
-    ) -> dict[str, Any]:
-        """Собрать snapshot аргументов, с которыми будет вызван tool.
+    ) -> tuple[Any, dict[str, Any], str | None]:
+        """Собирает raw-args по имени tool'а и валидирует через Pydantic.
 
-        Используется для записи в tool_calls.args — чтобы в админке было видно,
-        с чем именно tool был вызван (даты, sport_type, top_k, категория и т.д.).
+        Returns:
+            (args_model, args_snapshot, error)
+            — args_model: валидированный Pydantic-объект или None при ошибке
+            — args_snapshot: dict для логирования в tool_calls.args
+            — error: текст ошибки валидации или None
         """
-        ents = entities or {}
-        base: dict[str, Any] = {
-            "user_id": user_id,
-            "date_from": date_from.isoformat() if date_from else None,
-            "date_to": date_to.isoformat() if date_to else None,
-            "sport_type": sport_type,
-        }
+        if tool_name not in TOOL_ARGS_REGISTRY:
+            return (
+                None,
+                {"user_id": user_id},
+                f"Неизвестный tool: {tool_name}",
+            )
+
+        raw_args = ToolExecutor._collect_raw_args(
+            tool_name=tool_name,
+            user_id=user_id,
+            slots=slots,
+            query_text=query_text,
+        )
+
+        try:
+            args_model = validate_tool_args(tool_name, raw_args)
+        except ValidationError as exc:
+            # Упрощаем сообщение для логов: берём первую ошибку.
+            first = exc.errors()[0] if exc.errors() else {}
+            msg = f"{first.get('loc', ('?',))[-1]}: {first.get('msg', str(exc))}"
+            return None, raw_args, msg
+
+        return args_model, args_model.model_dump(mode="json"), None
+
+    @staticmethod
+    def _collect_raw_args(
+        tool_name: str,
+        user_id: str,
+        slots: SlotState,
+        query_text: str | None,
+    ) -> dict[str, Any]:
+        """Собрать dict аргументов из SlotState для конкретного tool'а."""
+        tr = slots.time_range
+        # Дефолт: если time_range не указан, используем последние 7 дней.
+        if tr is not None:
+            date_from, date_to = tr.date_from, tr.date_to
+        else:
+            today = date.today()
+            date_from = today - timedelta(days=6)
+            date_to = today
+
+        sport = slots.sport_type.value if slots.sport_type else None
+
+        if tool_name == "get_activities":
+            return {
+                "user_id": user_id,
+                "date_from": date_from,
+                "date_to": date_to,
+                "sport_type": sport,
+            }
+
+        if tool_name == "get_activities_by_sport":
+            # Если slot пустой — fallback на get_activities обрабатывается
+            # в dispatch. Здесь собираем args как есть; если sport нет,
+            # валидация упадёт и dispatch сделает fallback.
+            args: dict[str, Any] = {
+                "user_id": user_id,
+                "sport_type": sport or "",  # заведомо невалидный — триггер fallback
+                "days": (tr.days if tr is not None else 30),
+            }
+            return args
+
+        if tool_name == "get_daily_facts":
+            metrics = [m.value for m in slots.metrics] or None
+            return {
+                "user_id": user_id,
+                "date_from": date_from,
+                "date_to": date_to,
+                "metrics": metrics,
+            }
+
+        if tool_name == "get_user_profile":
+            return {"user_id": user_id}
+
         if tool_name == "rag_retrieve":
-            base["query_text"] = query_text
-            base["rag_category"] = ents.get("rag_category")
-            base["rag_top_k"] = int(ents.get("rag_top_k", 5))
-        if tool_name in {"compute_recovery", "check_overtraining"}:
-            # эти tools смотрят свои окна, а не date_from/date_to из entities
-            base.pop("date_from", None)
-            base.pop("date_to", None)
-            base["window_days"] = 14 if tool_name == "compute_recovery" else 14
+            return {
+                "query_text": query_text or "",
+                "sport_type": sport,
+                "top_k": 5,
+            }
+
+        if tool_name in ("compute_recovery", "check_overtraining"):
+            # Если пользователь явно указал time_range — используем его длину
+            # вместо захардкоженных 14 дней. Клипуем в допустимый диапазон
+            # (меньше 3 дней бессмысленно, больше 60 — слишком шумно).
+            if tr is not None:
+                window = max(_MIN_WINDOW_DAYS, min(_MAX_WINDOW_DAYS, tr.days))
+            else:
+                window = _DEFAULT_WINDOW_DAYS
+            return {"user_id": user_id, "window_days": window}
+
         if tool_name == "compute_strain":
-            base["reference_date"] = date_to.isoformat() if date_to else None
-        return base
+            return {"user_id": user_id, "reference_date": date_to}
+
+        if tool_name == "log_activity":
+            return {
+                "user_id": user_id,
+                "sport_type": sport or "",
+                "duration": 0,
+            }
+
+        if tool_name == "update_profile":
+            return {"user_id": user_id, "field": "name", "value": None}
+
+        return {"user_id": user_id}
+
+    # -----------------------------------------------------------------
+    # Диспетчеризация
+    # -----------------------------------------------------------------
 
     async def _dispatch(
         self,
         tool_name: str,
-        user_id: str,
-        date_from: date,
-        date_to: date,
-        sport_type: str | None,
+        args: Any,
         db: AsyncSession,
-        query_text: str | None = None,
-        entities: dict | None = None,
     ) -> ToolResult:
-        """Вызвать конкретный tool по имени с нужными параметрами."""
-        if tool_name == "get_activities":
+        """Вызвать конкретный tool по имени с валидированными args."""
+        if isinstance(args, GetActivitiesArgs):
             return await get_activities(
                 db=db,
-                user_id=user_id,
-                date_from=date_from,
-                date_to=date_to,
-                sport_type=sport_type,
+                user_id=args.user_id,
+                date_from=args.date_from,
+                date_to=args.date_to,
+                sport_type=args.sport_type.value if args.sport_type else None,
             )
 
-        if tool_name == "get_activities_by_sport":
-            if not sport_type:
-                logger.warning(
-                    "ToolExecutor: get_activities_by_sport вызван без sport_type, "
-                    "используем get_activities"
-                )
-                return await get_activities(
-                    db=db,
-                    user_id=user_id,
-                    date_from=date_from,
-                    date_to=date_to,
-                )
+        if isinstance(args, GetActivitiesBySportArgs):
             return await get_activities_by_sport(
                 db=db,
-                user_id=user_id,
-                sport_type=sport_type,
+                user_id=args.user_id,
+                sport_type=args.sport_type.value,
+                days=args.days,
+                limit=args.limit,
             )
 
-        if tool_name == "get_daily_facts":
+        if isinstance(args, GetDailyFactsArgs):
             return await get_daily_facts(
                 db=db,
-                user_id=user_id,
-                date_from=date_from,
-                date_to=date_to,
+                user_id=args.user_id,
+                date_from=args.date_from,
+                date_to=args.date_to,
+                metrics=[m.value for m in args.metrics] if args.metrics else None,
             )
 
-        if tool_name == "get_user_profile":
-            return await get_user_profile(db=db, user_id=user_id)
+        if isinstance(args, GetUserProfileArgs):
+            return await get_user_profile(db=db, user_id=args.user_id)
 
-        if tool_name == "rag_retrieve":
-            if not query_text:
-                logger.warning("ToolExecutor: rag_retrieve вызван без query_text")
-                return ToolResult(
-                    tool_name="rag_retrieve",
-                    success=False,
-                    data=None,
-                    error="query_text не передан",
-                )
-            ents = entities or {}
-            category = ents.get("rag_category")
-            top_k = int(ents.get("rag_top_k", 5))
+        if isinstance(args, RagRetrieveArgs):
             return await rag_retrieve(
-                query=query_text,
-                category=category,
-                sport_type=sport_type,
-                top_k=top_k,
+                query=args.query_text,
+                category=args.category,
+                sport_type=args.sport_type.value if args.sport_type else None,
+                top_k=args.top_k,
             )
 
-        if tool_name == "compute_recovery":
-            return await self._compute_recovery(user_id=user_id, db=db)
+        if isinstance(args, ComputeRecoveryArgs):
+            return await self._compute_recovery(
+                user_id=args.user_id, db=db, window_days=args.window_days
+            )
 
-        if tool_name == "compute_strain":
+        if isinstance(args, ComputeStrainArgs):
             return await self._compute_strain(
-                user_id=user_id, db=db, reference_date=date_to
+                user_id=args.user_id, db=db, reference_date=args.reference_date
             )
 
-        if tool_name == "check_overtraining":
-            return await self._check_overtraining(user_id=user_id, db=db)
+        if isinstance(args, CheckOvertrainingArgs):
+            return await self._check_overtraining(
+                user_id=args.user_id, db=db, window_days=args.window_days
+            )
 
-        # log_activity и update_profile вызываются через execute_action (запись)
         logger.warning("ToolExecutor: неизвестный tool '%s'", tool_name)
         return ToolResult(
             tool_name=tool_name,
@@ -248,22 +371,27 @@ class ToolExecutor:
             error=f"Неизвестный tool: {tool_name}",
         )
 
+    # -----------------------------------------------------------------
+    # Aggregator tools (compute_*)
+    # -----------------------------------------------------------------
+
     async def _compute_recovery(
-        self, user_id: str, db: AsyncSession
+        self, user_id: str, db: AsyncSession, window_days: int = _DEFAULT_WINDOW_DAYS
     ) -> ToolResult:
-        """Рассчитать recovery score за последние 14 дней."""
+        """Рассчитать recovery score за заданное окно."""
         import dataclasses
         from app.services.data_processing.recovery_score import compute_recovery_score
 
         today = date.today()
         facts_res = await get_daily_facts(
             db=db, user_id=user_id,
-            date_from=today - timedelta(days=13),
+            date_from=today - timedelta(days=window_days - 1),
             date_to=today,
         )
+        # Для активностей берём окно x2 — чтобы посчитать trailing load.
         acts_res = await get_activities(
             db=db, user_id=user_id,
-            date_from=today - timedelta(days=27),
+            date_from=today - timedelta(days=window_days * 2 - 1),
             date_to=today,
         )
         result = compute_recovery_score(
@@ -299,21 +427,21 @@ class ToolExecutor:
         )
 
     async def _check_overtraining(
-        self, user_id: str, db: AsyncSession
+        self, user_id: str, db: AsyncSession, window_days: int = _DEFAULT_WINDOW_DAYS
     ) -> ToolResult:
-        """Проверить маркеры перетренированности за последние 14 дней."""
+        """Проверить маркеры перетренированности за заданное окно."""
         import dataclasses
         from app.services.data_processing.overtraining_detection import detect_overtraining
 
         today = date.today()
         facts_res = await get_daily_facts(
             db=db, user_id=user_id,
-            date_from=today - timedelta(days=13),
+            date_from=today - timedelta(days=window_days - 1),
             date_to=today,
         )
         acts_res = await get_activities(
             db=db, user_id=user_id,
-            date_from=today - timedelta(days=27),
+            date_from=today - timedelta(days=window_days * 2 - 1),
             date_to=today,
         )
         result = detect_overtraining(
@@ -326,6 +454,10 @@ class ToolExecutor:
             data=dataclasses.asdict(result),
         )
 
+    # -----------------------------------------------------------------
+    # Write-actions
+    # -----------------------------------------------------------------
+
     async def execute_action(
         self,
         tool_name: str,
@@ -335,35 +467,14 @@ class ToolExecutor:
     ) -> ToolResult:
         """Вызвать write-инструмент (log_activity, update_profile).
 
-        Args:
-            tool_name: Имя write-tool.
-            user_id: Идентификатор пользователя.
-            params: Параметры инструмента (sport_type, duration и т.д.).
-            db: Асинхронная сессия SQLAlchemy.
-
-        Returns:
-            ToolResult с результатом операции записи.
+        params валидируются через Pydantic-модель соответствующего tool'а.
         """
-        args_snapshot = {"user_id": user_id, **dict(params or {})}
         start_ms = time.monotonic() * 1000
-        if tool_name == "log_activity":
-            result = await log_activity(
-                db=db,
-                user_id=user_id,
-                sport_type=params.get("sport_type", "other"),
-                duration=params.get("duration", 0),
-                calories=params.get("calories", 0),
-                distance=params.get("distance"),
-                notes=params.get("notes"),
-            )
-        elif tool_name == "update_profile":
-            result = await update_profile(
-                db=db,
-                user_id=user_id,
-                field=params.get("field", ""),
-                value=params.get("value"),
-            )
-        else:
+        raw_args: dict[str, Any] = {"user_id": user_id, **dict(params or {})}
+
+        try:
+            args_model = validate_tool_args(tool_name, raw_args)
+        except KeyError:
             logger.warning("ToolExecutor.execute_action: неизвестный tool '%s'", tool_name)
             result = ToolResult(
                 tool_name=tool_name,
@@ -371,11 +482,62 @@ class ToolExecutor:
                 data=None,
                 error=f"Неизвестный write-tool: {tool_name}",
             )
+            duration_ms = int(time.monotonic() * 1000 - start_ms)
+            tool_call_logger.record(
+                name=tool_name, source="tool_executor", args=raw_args,
+                result=None, success=False, error=result.error,
+                duration_ms=duration_ms,
+            )
+            return result
+        except ValidationError as exc:
+            first = exc.errors()[0] if exc.errors() else {}
+            err = f"{first.get('loc', ('?',))[-1]}: {first.get('msg', str(exc))}"
+            result = ToolResult(
+                tool_name=tool_name, success=False, data=None,
+                error=f"Некорректные аргументы: {err}",
+            )
+            duration_ms = int(time.monotonic() * 1000 - start_ms)
+            tool_call_logger.record(
+                name=tool_name, source="tool_executor", args=raw_args,
+                result=None, success=False, error=result.error,
+                duration_ms=duration_ms,
+            )
+            return result
+
+        if isinstance(args_model, LogActivityArgs):
+            result = await log_activity(
+                db=db,
+                user_id=args_model.user_id,
+                sport_type=args_model.sport_type.value,
+                duration=args_model.duration,
+                calories=args_model.calories,
+                distance=args_model.distance,
+                notes=args_model.notes,
+            )
+        elif isinstance(args_model, UpdateProfileArgs):
+            result = await update_profile(
+                db=db,
+                user_id=args_model.user_id,
+                field=args_model.field,
+                value=args_model.value,
+            )
+        else:
+            logger.warning(
+                "ToolExecutor.execute_action: tool '%s' не является write-action",
+                tool_name,
+            )
+            result = ToolResult(
+                tool_name=tool_name,
+                success=False,
+                data=None,
+                error=f"Tool {tool_name} не является write-action",
+            )
+
         duration_ms = int(time.monotonic() * 1000 - start_ms)
         tool_call_logger.record(
             name=tool_name,
             source="tool_executor",
-            args=args_snapshot,
+            args=args_model.model_dump(mode="json"),
             result=result.data if result.success else None,
             success=result.success,
             error=result.error,
