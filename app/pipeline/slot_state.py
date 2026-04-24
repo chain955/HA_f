@@ -33,7 +33,6 @@ class SlotState(BaseModel):
 
     Все поля опциональны: intent detection заполняет только то, что смогло
     извлечь. Пустые поля идут в missing_slots для механизма clarification
-    (issue «Clarification loop», отложено на отдельную задачу).
     """
 
     time_range: TimeRange | None = None
@@ -65,7 +64,7 @@ class SlotState(BaseModel):
     def missing(self, required: list[str]) -> list[str]:
         """Список требуемых слотов, которые не заполнены.
 
-        Используется для clarification loop (TODO в отдельной задаче).
+        Используется для clarification loop.
         """
         missing: list[str] = []
         for name in required:

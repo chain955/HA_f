@@ -589,7 +589,7 @@ class SeedGenerator:
 
     def _truncate(self, session: Session) -> None:
         """Очистить таблицы данных (кроме user_profiles)."""
-        for table in ("activities", "daily_facts", "pipeline_logs", "chat_messages", "chat_sessions"):
+        for table in ("activities", "daily_facts"):
             try:
                 session.execute(text(f"DELETE FROM {table}"))
             except Exception:
