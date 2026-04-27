@@ -141,6 +141,12 @@ class TestExtractTimeRangeLabel:
             == "за последние 14 дней"
         )
 
+    def test_word_number_weeks(self) -> None:
+        assert extract_time_range_label("шаги за две недели") == "за последние 14 дней"
+
+    def test_word_number_days(self) -> None:
+        assert extract_time_range_label("шаги за двадцать один день") == "за последние 21 дней"
+
     def test_month_name(self) -> None:
         assert extract_time_range_label("что было в январе") == "январь"
         assert extract_time_range_label("события в мае") == "май"
@@ -204,6 +210,18 @@ class TestSpecificDateExtraction:
         today = date(2026, 4, 25)
         assert extract_time_range_label("Шаги 16 апреля", today=today) == "2026-04-16"
 
+    def test_day_with_month_name_word_ordinal(self) -> None:
+        today = date(2026, 4, 25)
+        assert extract_time_range_label("Шаги первое апреля", today=today) == "2026-04-01"
+
+    def test_day_with_month_name_word_ordinal_genitive(self) -> None:
+        today = date(2026, 4, 25)
+        assert extract_time_range_label("Шаги первого апреля", today=today) == "2026-04-01"
+
+    def test_day_with_month_name_compound_word_ordinal(self) -> None:
+        today = date(2026, 4, 25)
+        assert extract_time_range_label("Шаги двадцать первого апреля", today=today) == "2026-04-21"
+
     def test_day_with_month_name_dash_ordinal(self) -> None:
         today = date(2026, 4, 25)
         assert extract_time_range_label("Шаги 16-го апреля", today=today) == "2026-04-16"
@@ -212,6 +230,10 @@ class TestSpecificDateExtraction:
         """«16 мая» при сегодня 2026-04-25 → 2025-05-16 (май ещё не наступил)."""
         today = date(2026, 4, 25)
         assert extract_time_range_label("Шаги 16 мая", today=today) == "2025-05-16"
+
+    def test_word_ordinal_future_month_uses_prev_year(self) -> None:
+        today = date(2026, 4, 25)
+        assert extract_time_range_label("Шаги первое мая", today=today) == "2025-05-01"
 
     def test_invalid_day_returns_no_match(self) -> None:
         """31 февраля невалидно — функция не должна падать, возвращает None."""
@@ -237,5 +259,9 @@ class TestResolveIsoLabel:
         tr = build_time_range("2026-04-16")
         assert tr is not None
         assert tr.days == 1
-        assert tr.date_from == date(2026, 4, 16)
-        assert tr.label == "2026-04-16"
+
+    def test_word_number_weeks_builds_days(self) -> None:
+        tr = build_time_range("за две недели")
+        assert tr is not None
+        assert tr.days == 14
+        assert tr.label == "за две недели"

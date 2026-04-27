@@ -220,6 +220,21 @@ class TestEntityExtraction:
         assert result.slots.time_range.days == 1
         assert result.slots.time_range.date_from.day == target_day
 
+    @pytest.mark.asyncio
+    async def test_word_number_week_range(self, detector: IntentDetector) -> None:
+        result = await detector.detect("Сколько шагов за две недели?")
+        assert result.entities.get("time_range") == "за последние 14 дней"
+        assert result.slots.time_range is not None
+        assert result.slots.time_range.days == 14
+
+    @pytest.mark.asyncio
+    async def test_word_ordinal_day_with_month(self, detector: IntentDetector) -> None:
+        result = await detector.detect("Сколько шагов за первое апреля?")
+        assert result.entities.get("time_range") is not None
+        assert result.entities["time_range"].endswith("-04-01")
+        assert result.slots.time_range is not None
+        assert result.slots.time_range.days == 1
+
 
 # ---------------------------------------------------------------------------
 # LLM stage 2 — fallback поведение

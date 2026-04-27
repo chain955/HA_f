@@ -47,6 +47,87 @@ _DAY_OF_MONTH_RE = re.compile(
 
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
+_CARDINAL_NUMBERS: dict[str, int] = {
+    "один": 1, "одна": 1, "одно": 1, "одну": 1, "одной": 1,
+    "два": 2, "две": 2,
+    "три": 3, "четыре": 4, "пять": 5,
+    "шесть": 6, "семь": 7, "восемь": 8, "девять": 9,
+    "десять": 10, "одиннадцать": 11, "двенадцать": 12,
+    "тринадцать": 13, "четырнадцать": 14, "пятнадцать": 15,
+    "шестнадцать": 16, "семнадцать": 17, "восемнадцать": 18,
+    "девятнадцать": 19,
+    "двадцать": 20, "тридцать": 30, "сорок": 40,
+    "пятьдесят": 50, "шестьдесят": 60,
+}
+
+_ORDINAL_DAY_WORDS: dict[str, int] = {
+    "первое": 1, "первого": 1,
+    "второе": 2, "второго": 2,
+    "третье": 3, "третьего": 3,
+    "четвертое": 4, "четвертого": 4, "четвёртое": 4, "четвёртого": 4,
+    "пятое": 5, "пятого": 5,
+    "шестое": 6, "шестого": 6,
+    "седьмое": 7, "седьмого": 7,
+    "восьмое": 8, "восьмого": 8,
+    "девятое": 9, "девятого": 9,
+    "десятое": 10, "десятого": 10,
+    "одиннадцатое": 11, "одиннадцатого": 11,
+    "двенадцатое": 12, "двенадцатого": 12,
+    "тринадцатое": 13, "тринадцатого": 13,
+    "четырнадцатое": 14, "четырнадцатого": 14,
+    "пятнадцатое": 15, "пятнадцатого": 15,
+    "шестнадцатое": 16, "шестнадцатого": 16,
+    "семнадцатое": 17, "семнадцатого": 17,
+    "восемнадцатое": 18, "восемнадцатого": 18,
+    "девятнадцатое": 19, "девятнадцатого": 19,
+    "двадцатое": 20, "двадцатого": 20,
+    "тридцатое": 30, "тридцатого": 30,
+}
+
+for _prefix_word, _prefix_value in (("двадцать", 20), ("тридцать", 30)):
+    for _word, _value in list(_ORDINAL_DAY_WORDS.items()):
+        if 1 <= _value <= 9 and _prefix_value + _value <= 31:
+            _ORDINAL_DAY_WORDS[f"{_prefix_word} {_word}"] = _prefix_value + _value
+
+_ORDINAL_DAY_WORDS_ALT = "|".join(
+    re.escape(word).replace(r"\ ", r"\s+")
+    for word in sorted(_ORDINAL_DAY_WORDS, key=len, reverse=True)
+)
+_WORD_DAY_MONTH_RE = re.compile(rf"\b({_ORDINAL_DAY_WORDS_ALT})\s+({_MONTHS_ALT})\b")
+
+
+def _normalize_ru_text(text: str) -> str:
+    return text.lower().replace("ё", "е").strip()
+
+
+def _parse_cardinal_number_words(text: str) -> int | None:
+    total = 0
+    for token in _normalize_ru_text(text).split():
+        value = _CARDINAL_NUMBERS.get(token)
+        if value is None:
+            return None
+        total += value
+    return total or None
+
+
+def _extract_word_period_days(entity: str) -> int | None:
+    patterns: list[tuple[str, int]] = [
+        (r"\bза\s+последни\w*\s+([а-яё]+(?:\s+[а-яё]+)?)\s+(?:дн|ден)\w+\b", 1),
+        (r"\bпоследни\w*\s+([а-яё]+(?:\s+[а-яё]+)?)\s+(?:дн|ден)\w+\b", 1),
+        (r"\bза\s+([а-яё]+(?:\s+[а-яё]+)?)\s+(?:дн|ден)\w+\b", 1),
+        (r"\bза\s+последни\w*\s+([а-яё]+(?:\s+[а-яё]+)?)\s+недел\w+\b", 7),
+        (r"\bпоследни\w*\s+([а-яё]+(?:\s+[а-яё]+)?)\s+недел\w+\b", 7),
+        (r"\bза\s+([а-яё]+(?:\s+[а-яё]+)?)\s+недел\w+\b", 7),
+    ]
+    for pattern, multiplier in patterns:
+        m = re.search(pattern, entity)
+        if not m:
+            continue
+        n = _parse_cardinal_number_words(m.group(1))
+        if n is not None:
+            return n * multiplier
+    return None
+
 
 def current_datetime_str(now: datetime | None = None) -> str:
     """Текущая дата и время сервера в читаемом русском формате.
@@ -111,7 +192,7 @@ def resolve_time_range(time_range_entity: str | None) -> tuple[date, date]:
     if time_range_entity is None:
         return today - timedelta(days=6), today
 
-    entity = time_range_entity.lower().strip()
+    entity = _normalize_ru_text(time_range_entity)
 
     if entity == "сегодня":
         return today, today
@@ -140,6 +221,10 @@ def resolve_time_range(time_range_entity: str | None) -> tuple[date, date]:
     m = re.search(r"за последни\w*\s+(\d+)\s+дн\w+", entity)
     if m:
         n = int(m.group(1))
+        return today - timedelta(days=n - 1), today
+
+    n = _extract_word_period_days(entity)
+    if n is not None:
         return today - timedelta(days=n - 1), today
 
     # Названия месяцев
@@ -185,7 +270,7 @@ def extract_time_range_label(text: str, today: date | None = None) -> str | None
 
     Нормализация поглощает формы вроде «3-4 дня» → «за последние 3 дня».
     """
-    lower = text.lower()
+    lower = _normalize_ru_text(text)
     today = today or date.today()
 
     if re.search(r"\bсегодня\b", lower):
@@ -217,6 +302,10 @@ def extract_time_range_label(text: str, today: date | None = None) -> str | None
     m = re.search(r"\bза\s+(\d+)\s+дн\w+\b", lower)
     if m:
         return f"за последние {int(m.group(1))} дней"
+
+    n = _extract_word_period_days(lower)
+    if n is not None:
+        return f"за последние {n} дней"
 
     months = [
         (r"\bв январ\w+\b", "январь"),
@@ -269,6 +358,22 @@ def _try_match_specific_date(lower: str, today: date) -> str | None:
                     return None
             return candidate.isoformat()
 
+    m = _WORD_DAY_MONTH_RE.search(lower)
+    if m:
+        day = _ORDINAL_DAY_WORDS.get(re.sub(r"\s+", " ", m.group(1)))
+        month_word = m.group(2)
+        month = _month_num_from_word(month_word)
+        if day is not None and month is not None:
+            year = today.year
+            candidate = _safe_date(year, month, day)
+            if candidate is None:
+                return None
+            if candidate > today:
+                candidate = _safe_date(year - 1, month, day)
+                if candidate is None:
+                    return None
+            return candidate.isoformat()
+
     # «N числа» — без явного месяца, текущий месяц.
     m = _DAY_OF_MONTH_RE.search(lower)
     if m:
@@ -276,6 +381,14 @@ def _try_match_specific_date(lower: str, today: date) -> str | None:
         resolved = _resolve_day_in_current_month(day, today)
         if resolved is not None:
             return resolved.isoformat()
+
+    m = re.search(rf"\b({_ORDINAL_DAY_WORDS_ALT})\s+числа\b", lower)
+    if m:
+        day = _ORDINAL_DAY_WORDS.get(re.sub(r"\s+", " ", m.group(1)))
+        if day is not None:
+            resolved = _resolve_day_in_current_month(day, today)
+            if resolved is not None:
+                return resolved.isoformat()
 
     return None
 
