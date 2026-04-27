@@ -21,23 +21,26 @@ from pydantic import BaseModel, Field, model_validator
 
 
 # ---------------------------------------------------------------------------
-# Enum'ы (значения совпадают с теми, что исторически использует pipeline —
-# intent_detection выдаёт их как строки, поэтому трогать значения нельзя.)
+# Enum'ы. Все значения — английские технические токены: они идут в LLM-промпт
+# планировщика (через tool_to_prompt_signature) и в args tool'ов. Раньше часть
+# метрик жила на русском (исторически совпадая с эмиттерами intent_detection),
+# из-за чего planner-LLM регулярно «нормализовал» их обратно в английский и
+# падал на Pydantic-валидации `metrics: list[MetricEnum]`.
 # ---------------------------------------------------------------------------
 
 
 class MetricEnum(str, Enum):
     HEART_RATE = "heart_rate"
     HRV = "hrv"
-    WEIGHT = "вес"
-    CALORIES = "калории"
-    STEPS = "шаги"
-    HEIGHT = "рост"
-    DISTANCE = "дистанция"
-    DURATION = "время"
-    PACE = "темп"
+    WEIGHT = "weight"
+    CALORIES = "calories"
+    STEPS = "steps"
+    HEIGHT = "height"
+    DISTANCE = "distance"
+    DURATION = "duration"
+    PACE = "pace"
     CADENCE = "cadence"
-    SLEEP = "сон"
+    SLEEP = "sleep"
     RECOVERY = "recovery"
     STRAIN = "strain"
     RPE = "rpe"

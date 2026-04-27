@@ -159,12 +159,12 @@ class TestEntityExtraction:
     @pytest.mark.asyncio
     async def test_metric_weight(self, detector: IntentDetector) -> None:
         result = await detector.detect("Сколько я вешу?")
-        assert result.entities.get("metric") == "вес"
+        assert result.entities.get("metric") == "weight"
 
     @pytest.mark.asyncio
     async def test_metric_calories(self, detector: IntentDetector) -> None:
         result = await detector.detect("Сколько калорий я сжёг?")
-        assert result.entities.get("metric") == "калории"
+        assert result.entities.get("metric") == "calories"
 
     @pytest.mark.asyncio
     async def test_metric_hrv(self, detector: IntentDetector) -> None:
@@ -174,7 +174,7 @@ class TestEntityExtraction:
     @pytest.mark.asyncio
     async def test_metric_sleep(self, detector: IntentDetector) -> None:
         result = await detector.detect("Как я сплю последнюю неделю?")
-        assert result.entities.get("metric") == "сон"
+        assert result.entities.get("metric") == "sleep"
 
     @pytest.mark.asyncio
     async def test_body_part_knee(self, detector: IntentDetector) -> None:

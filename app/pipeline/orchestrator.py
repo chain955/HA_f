@@ -674,9 +674,12 @@ class PipelineOrchestrator:
             }
 
         if module_name == "trend_analyzer":
+            # Маппинг канонической metric (MetricEnum.value) → имя поля в
+            # activities-словаре. Identity для большинства; для distance
+            # используется физическое имя колонки `distance_meters`.
             _ENTITY_TO_METRIC: dict[str, str] = {
-                "калории": "calories",
-                "дистанция": "distance_meters",
+                "calories": "calories",
+                "distance": "distance_meters",
             }
             entity_metric = entities.get("metric", "")
             metric = _ENTITY_TO_METRIC.get(entity_metric, "duration_seconds")

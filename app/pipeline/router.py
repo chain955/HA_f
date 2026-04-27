@@ -36,11 +36,11 @@ _RECOVERY_KEYWORDS: tuple[str, ...] = (
 )
 
 # Метрики, для ответа по которым нужны динамические данные из БД
-# (daily_facts / activities). Статические поля профиля (вес, рост) сюда
+# (daily_facts / activities). Статические поля профиля (weight, height) сюда
 # не входят — они уже попадают в fast-path через system prompt.
 _DYNAMIC_METRICS: frozenset[str] = frozenset({
-    "heart_rate", "hrv", "шаги", "калории", "сон",
-    "recovery", "strain", "дистанция", "время", "темп",
+    "heart_rate", "hrv", "steps", "calories", "sleep",
+    "recovery", "strain", "distance", "duration", "pace",
     "cadence", "rpe",
 })
 
