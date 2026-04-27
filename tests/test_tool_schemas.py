@@ -172,7 +172,7 @@ class TestGetDailyFactsArgs:
             user_id="u1",
             date_from=date(2026, 4, 1),
             date_to=date(2026, 4, 7),
-            metrics=["heart_rate", "шаги"],
+            metrics=["heart_rate", "steps"],
         )
         assert args.metrics == [MetricEnum.HEART_RATE, MetricEnum.STEPS]
 

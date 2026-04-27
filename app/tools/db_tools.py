@@ -88,23 +88,21 @@ def _daily_fact_to_dict(fact: DailyFact) -> dict:
     }
 
 
-# Маппинг логических метрик (значения MetricEnum + английские алиасы) на
-# реальные столбцы DailyFact. Нужен для фильтра в get_daily_facts: intent
-# detection/planner передают метрики в терминах MetricEnum («шаги», «калории»,
-# «сон», «recovery», ...), а DailyFact хранит их под техническими именами.
-# Метрики, которых нет в DailyFact (вес, рост, strain, rpe, дистанция, темп,
-# время, cadence), в словарь не попадают и при фильтре игнорируются.
+# Маппинг логических метрик на реальные столбцы DailyFact. Канонические ключи —
+# значения MetricEnum (английские: steps, calories, sleep, ...). Дополнительно
+# принимаем имена столбцов и легаси-русские алиасы (шаги/калории/сон) — на
+# случай, если в БД ещё лежат entities из старых сессий или кто-то передаст
+# raw-строку. Метрики, которых нет в DailyFact (weight, height, strain, rpe,
+# distance, pace, duration, cadence), в словарь не попадают и при фильтре
+# игнорируются.
 _METRIC_TO_DAILY_FACT_FIELDS: dict[str, tuple[str, ...]] = {
-    "шаги": ("steps",),
     "steps": ("steps",),
-    "калории": ("calories_kcal",),
     "calories": ("calories_kcal",),
     "calories_kcal": ("calories_kcal",),
     "heart_rate": ("resting_heart_rate",),
     "resting_heart_rate": ("resting_heart_rate",),
     "hrv": ("hrv_rmssd_milli",),
     "hrv_rmssd_milli": ("hrv_rmssd_milli",),
-    "сон": ("sleep_total_in_bed_milli",),
     "sleep": ("sleep_total_in_bed_milli",),
     "sleep_total_in_bed_milli": ("sleep_total_in_bed_milli",),
     "recovery": ("recovery_score",),
@@ -115,6 +113,11 @@ _METRIC_TO_DAILY_FACT_FIELDS: dict[str, tuple[str, ...]] = {
     "skin_temp_celsius": ("skin_temp_celsius",),
     "water": ("water_liters",),
     "water_liters": ("water_liters",),
+    # Legacy-русские алиасы — на случай pending_clarifications / chat_messages,
+    # сохранённых до миграции MetricEnum на английский.
+    "шаги": ("steps",),
+    "калории": ("calories_kcal",),
+    "сон": ("sleep_total_in_bed_milli",),
 }
 
 
@@ -359,8 +362,8 @@ async def get_daily_facts(
         data = [_daily_fact_to_dict(f) for f in facts]
 
         # Если запрошены конкретные метрики — оставляем только нужные поля.
-        # Метрики приходят в терминах MetricEnum («шаги», «калории», «сон»,
-        # «recovery», ...) либо как имена столбцов; транслируем в имена полей
+        # Метрики приходят в терминах MetricEnum (steps, calories, sleep,
+        # recovery, ...) либо как имена столбцов; транслируем в имена полей
         # DailyFact. Неизвестные метрики молча пропускаем.
         if metrics:
             allowed: set[str] = {"id", "user_id", "iso_date"}

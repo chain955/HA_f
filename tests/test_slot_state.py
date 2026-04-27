@@ -38,7 +38,7 @@ class TestSlotStateFromEntities:
         assert slots.metrics == [MetricEnum.HEART_RATE]
 
     def test_list_of_metrics(self) -> None:
-        slots = slot_state_from_entities({"metrics": ["heart_rate", "шаги"]})
+        slots = slot_state_from_entities({"metrics": ["heart_rate", "steps"]})
         assert MetricEnum.HEART_RATE in slots.metrics
         assert MetricEnum.STEPS in slots.metrics
 
@@ -61,7 +61,7 @@ class TestSlotStateFromEntities:
 
     def test_mix_of_valid_and_invalid(self) -> None:
         slots = slot_state_from_entities(
-            {"metrics": ["heart_rate", "unknown", "шаги"]}
+            {"metrics": ["heart_rate", "unknown", "steps"]}
         )
         assert MetricEnum.HEART_RATE in slots.metrics
         assert MetricEnum.STEPS in slots.metrics
@@ -95,12 +95,12 @@ class TestSlotStateAccessors:
         original = {
             "time_range": "за неделю",
             "sport_type": "running",
-            "metric": "шаги",
+            "metric": "steps",
             "intensity": "тяжело",
         }
         slots = slot_state_from_entities(original)
         rt = slots.to_entities_dict()
         assert rt["time_range"] == "за неделю"
         assert rt["sport_type"] == "running"
-        assert rt["metric"] == "шаги"
+        assert rt["metric"] == "steps"
         assert rt["intensity"] == "тяжело"

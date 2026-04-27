@@ -204,7 +204,7 @@ async def test_long_term_skipped_when_no_relevant_entities() -> None:
     with patch("app.pipeline.memory_update.AsyncSessionLocal") as mock_local:
         await updater._update_long_term(
             user_id="u1",
-            entities={"time_range": "за неделю", "metric": "калории"},
+            entities={"time_range": "за неделю", "metric": "calories"},
         )
         mock_local.assert_not_called()
 

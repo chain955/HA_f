@@ -92,7 +92,7 @@ class TestToolSimple:
     def test_direct_question_with_dynamic_metric_uses_tools(self, router: Router) -> None:
         """direct_question про динамическую метрику → tool_simple (нужны данные БД)."""
         result = router.route(
-            make_intent("direct_question", entities={"metric": "шаги"}),
+            make_intent("direct_question", entities={"metric": "steps"}),
             make_safety(),
         )
         assert result.route == "tool_simple"
@@ -109,9 +109,9 @@ class TestToolSimple:
         assert result.route == "tool_simple"
 
     def test_direct_question_profile_metric_stays_fast(self, router: Router) -> None:
-        """Статические поля профиля (вес, рост) остаются в fast_path."""
+        """Статические поля профиля (weight, height) остаются в fast_path."""
         result = router.route(
-            make_intent("direct_question", entities={"metric": "вес"}),
+            make_intent("direct_question", entities={"metric": "weight"}),
             make_safety(),
         )
         assert result.route == "fast_direct_answer"
