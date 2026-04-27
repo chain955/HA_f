@@ -225,6 +225,55 @@ class TestSpecificDateExtraction:
         assert label == "2026-04-16"
 
 
+class TestWordNumeralsTimeRange:
+    """Числительные прописью — должны идти по тем же путям, что и цифры."""
+
+    def test_за_две_недели(self) -> None:
+        # Без today — проверяем только нормализованный label.
+        assert extract_time_range_label("шаги за две недели") == "за последние 14 дней"
+
+    def test_за_цифру_недель(self) -> None:
+        assert extract_time_range_label("за 2 недели") == "за последние 14 дней"
+
+    def test_за_три_недели(self) -> None:
+        assert extract_time_range_label("за три недели") == "за последние 21 дней"
+
+    def test_за_два_месяца(self) -> None:
+        assert extract_time_range_label("тренировки за два месяца") == "за последние 60 дней"
+
+    def test_first_april_neuter(self) -> None:
+        today = date(2026, 4, 25)
+        assert extract_time_range_label("шаги за первое апреля", today=today) == "2026-04-01"
+
+    def test_first_april_genitive(self) -> None:
+        today = date(2026, 4, 25)
+        assert extract_time_range_label("шаги за первого апреля", today=today) == "2026-04-01"
+
+    def test_compound_ordinal_day_of_month(self) -> None:
+        today = date(2026, 4, 25)
+        assert (
+            extract_time_range_label("шаги двадцать пятого числа", today=today)
+            == "2026-04-25"
+        )
+
+    def test_compound_ordinal_with_month(self) -> None:
+        today = date(2026, 4, 25)
+        assert (
+            extract_time_range_label("шаги двадцать первого апреля", today=today)
+            == "2026-04-21"
+        )
+
+    def test_word_numeral_does_not_break_unrelated_phrases(self) -> None:
+        # «одна тренировка вчера» — числительное не должно ломать «вчера».
+        assert extract_time_range_label("одна тренировка вчера") == "вчера"
+
+    def test_пятница_not_normalized(self) -> None:
+        # «пятница» содержит подстроку «пят», но это не число прописью.
+        # Проверяем, что normalization не съедает день недели.
+        from app.tools.time_utils import _normalize_word_numerals
+        assert _normalize_word_numerals("в пятницу был бег") == "в пятницу был бег"
+
+
 class TestResolveIsoLabel:
     """resolve_time_range понимает ISO-метку YYYY-MM-DD как одиночный день."""
 
